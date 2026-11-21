@@ -38,7 +38,7 @@ using namespace logger;
     if (type.empty())
         return LOG_TYPE::LOG_DEFAULT;   // documented fallback; dereferencing cend() was UB
 
-    auto itr = m_stringToEnumMap.find(type.data());
+    auto itr = m_stringToEnumMap.find(std::string(type));   // length-aware: a string_view need not be null-terminated
     if (itr != m_stringToEnumMap.end())
         return itr->second;
     else
@@ -72,12 +72,11 @@ using namespace logger;
 #ifdef LOG_FILE_NAME
         parser << LOG_FILE_NAME;
         fileName = parser.str();
-        // Break out then and there if file logging is requested
-        // but none provided. We are not assuming
-        // any log file name on our own in any case
+#endif  // LOG_FILE_NAME
+        // File logging needs a file name; we never assume one. Checked outside the
+        // LOG_FILE_NAME guard so FILE_LOGGING without it is rejected too.
         if (fileName.empty())
             break;
-#endif  // LOG_FILE_NAME
 #ifdef FILE_SIZE    // Is the max log file size provided?
         fileSize = FILE_SIZE;
 #endif // FILE_SIZE
@@ -91,10 +90,18 @@ using namespace logger;
         parser << LOG_FILE_PATH;
         filePath = parser.str();
         std::filesystem::path path(filePath);
-        if (!std::filesystem::is_directory(path))
+        std::error_code ec;   // non-throwing: this runs inside a noexcept initializer
+        if (!std::filesystem::is_directory(path, ec))
             break;  // Invalid file path not allowed (also false when it does not exist)
 #endif // LOG_FILE_PATH
-        pLoggingOps.reset(new FileOps(fileSize, fileName, filePath, fileExtn));
+        try
+        {
+            pLoggingOps.reset(new FileOps(fileSize, fileName, filePath, fileExtn));
+        }
+        catch (...)
+        {
+            break;  // a throw here would terminate the noexcept caller; use console logging instead
+        }
 #else   // Plain console logging it is
         pLoggingOps.reset(new ConsoleOps());
 #endif  // FILE_LOGGING

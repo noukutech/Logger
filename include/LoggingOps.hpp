@@ -97,7 +97,11 @@ namespace logger
             /**
              * @brief Get all the exceptions happened during the file ops
              *
-             * @return std::filesystem::path The file path object
+             * @warning Returns a reference to the live list, which producer and watcher
+             * threads append to. Only read it after all writers have stopped and flush()
+             * has returned; reading it concurrently with logging is a data race.
+             *
+             * @return const reference to the recorded exceptions
              */
             inline const std::vector<std::exception_ptr>& getAllExceptions() noexcept       { return m_excpPtrVec; }
 
@@ -438,6 +442,7 @@ namespace logger
             // Records pushed / written so far; guarded by m_DataRecordsMtx, used by flush()
             std::uint64_t m_pushedSeq = 0;
             std::uint64_t m_writtenSeq = 0;
+            bool m_watcherDone = false;   // guarded by m_DataRecordsMtx; set when the watcher has drained and exited
             std::thread m_watcher;
 
             /**

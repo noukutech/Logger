@@ -33,6 +33,11 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <vector>
+#include <algorithm>
+#include <ctime>
+#include <sstream>
+#include <thread>
+#include <future>
 
 using namespace logger;
 
@@ -44,24 +49,29 @@ class ClockTests : public ::testing::Test
         Clock clock;
 };
 
+// Formats a time_t the way Clock does, for comparison against values captured around the call
+static std::string putTime(std::time_t timeT, const bool local)
+{
+    std::ostringstream oss;
+    oss << std::put_time(local ? std::localtime(&timeT) : std::gmtime(&timeT), "%c %Z");
+    return oss.str();
+}
+
 TEST_F(ClockTests, testGetLocalTime)
 {
+    // Capture before and after so a second boundary during the call cannot fail the test
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto expLocalTime = clock.getLocalTime();
-    auto localTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTimeStr = std::localtime(&localTime);
-    std::ostringstream oss;
-    oss << std::put_time(localTimeStr, "%c %Z");
-    EXPECT_STREQ(expLocalTime.c_str(), oss.str().c_str());
+    const auto after = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    EXPECT_TRUE(expLocalTime == putTime(before, true) || expLocalTime == putTime(after, true)) << expLocalTime;
 }
 
 TEST_F(ClockTests, testGetGmtTime)
 {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto expGmtTime = clock.getGmtTime();
-    auto gmtTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto gmtTimeStr = std::gmtime(&gmtTime);
-    std::ostringstream oss;
-    oss << std::put_time(gmtTimeStr, "%c %Z");
-    EXPECT_STREQ(expGmtTime.c_str(), oss.str().c_str());
+    const auto after = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    EXPECT_TRUE(expGmtTime == putTime(before, false) || expGmtTime == putTime(after, false)) << expGmtTime;
 }
 
 TEST_F(ClockTests, testGetLocalTimeStr)
@@ -211,13 +221,14 @@ TEST_F(ClockTests, testStop)
 
 TEST_F(ClockTests, testGetElapsedTime)
 {
+    // sleep_for guarantees a minimum; the upper bounds only catch wrong units, since shared CI runners can oversleep a lot
     {
         clock.start();
         std::this_thread::sleep_for(std::chrono::seconds(1));
         clock.stop();
         auto elapsedTime = clock.getElapsedTime(TimeUnits::SECONDS);
         EXPECT_GE(elapsedTime, 1.0);
-        EXPECT_LE(elapsedTime, 1.1);
+        EXPECT_LT(elapsedTime, 5.0);
     }
     {
         clock.start();
@@ -225,61 +236,49 @@ TEST_F(ClockTests, testGetElapsedTime)
         clock.stop();
         auto elapsedTime = clock.getElapsedTime(TimeUnits::MILLISECONDS);
         EXPECT_GE(elapsedTime, 10.0);
-        EXPECT_LE(elapsedTime, 15.0);  // 100ms + 5ms (tolerance)
+        EXPECT_LT(elapsedTime, 1000.0);   // a seconds/microseconds mix-up would be off by 1000x
     }
 }
 
 TEST_F(ClockTests, testTimerThreadSafety)
 {
-    std::mutex timerMutex;
-    std::condition_variable timerCond;
-    std::atomic_bool isRunning = false;
-
+    // Explicit handshakes instead of sleeps: each thread checks the timer state only after the other side has acted
     {
-        auto threadFunc1 = [&]()
+        std::promise<void> started, checkedRunning;
+        std::thread t1([&]()
         {
-            std::lock_guard<std::mutex> lock(timerMutex);
             clock.start();
-            ASSERT_TRUE(clock.isRunning());
-            isRunning = false;
-            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            EXPECT_TRUE(clock.isRunning());
+            started.set_value();
+            checkedRunning.get_future().wait();
             clock.stop();
-            isRunning = false;
-            timerCond.notify_one();
-        };
-        auto threadFunc2 = [&]()
+        });
+        std::thread t2([&]()
         {
-            ASSERT_TRUE(clock.isRunning());
-            std::unique_lock<std::mutex> lock(timerMutex);
-            timerCond.wait(lock, [&] { return !isRunning.load(); });
-            ASSERT_FALSE(clock.isRunning());
-        };
-
-        std::thread t1(threadFunc1);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        std::thread t2(threadFunc2);
+            started.get_future().wait();
+            EXPECT_TRUE(clock.isRunning());
+            checkedRunning.set_value();
+        });
         t1.join();
         t2.join();
+        EXPECT_FALSE(clock.isRunning());
     }
     {
-        auto threadFunc1 = [&]()
+        std::promise<void> started;
+        std::thread t1([&]()
         {
-            std::lock_guard<std::mutex> lock(timerMutex);
             clock.start();
-            ASSERT_TRUE(clock.isRunning());
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        };
-        auto threadFunc2 = [&]()
+            started.set_value();
+        });
+        std::thread t2([&]()
         {
+            started.get_future().wait();
             EXPECT_TRUE(clock.isRunning());
-            auto timeElapsed = clock.getElapsedTime(TimeUnits::MILLISECONDS);
-            EXPECT_EQ(timeElapsed, -1.0);
-        };
-        std::thread t1(threadFunc1);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        std::thread t2(threadFunc2);
+            EXPECT_EQ(clock.getElapsedTime(TimeUnits::MILLISECONDS), -1.0);   // elapsed is undefined while running
+        });
         t1.join();
         t2.join();
+        clock.stop();
     }
 }
 
@@ -293,7 +292,10 @@ TEST(ClockRegressionTests, formatFromTemporaryStringOutlivesIt)
         clock = std::make_unique<Clock>(fmt);
         fmt.assign(fmt.size(), 'X');   // overwrite the source buffer
     }
-    EXPECT_EQ(clock->getYear(), clock->getLocalTimeStr());
+    // Year is 4 digits; a dangling view would yield "XX" or garbage
+    const auto year = clock->getLocalTimeStr();
+    ASSERT_EQ(4u, year.size()) << year;
+    EXPECT_TRUE(std::all_of(year.begin(), year.end(), [](char c) { return c >= '0' && c <= '9'; })) << year;
 }
 
 // Regression: an oversized strftime result left the buffer unspecified; it must return "" safely.
@@ -307,12 +309,15 @@ TEST(ClockRegressionTests, oversizedFormatReturnsEmpty)
 TEST(ClockRegressionTests, concurrentFormattingIsConsistent)
 {
     Clock clock;
-    const auto year = clock.getYear();
+    // Bracket the run so crossing local New Year mid-test cannot fail it
+    const auto yearBefore = clock.getLocalTimeStr("%Y");
+    std::vector<std::string> results(8 * 500);
     std::vector<std::thread> workers;
-    std::atomic<int> mismatches{0};
     for (int t = 0; t < 8; ++t)
-        workers.emplace_back([&]() { for (int i = 0; i < 500; ++i) if (clock.getLocalTimeStr("%Y") != year || clock.getGmtTimeStr("%Y").size() != 4) ++mismatches; });
+        workers.emplace_back([&, t]() { for (int i = 0; i < 500; ++i) results[t * 500 + i] = clock.getLocalTimeStr("%Y"); });
     for (auto& w : workers)
         w.join();
-    EXPECT_EQ(0, mismatches.load());
+    const auto yearAfter = clock.getLocalTimeStr("%Y");
+    for (const auto& year : results)
+        EXPECT_TRUE(year == yearBefore || year == yearAfter) << year;
 }

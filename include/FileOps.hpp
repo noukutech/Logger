@@ -449,6 +449,7 @@ namespace logger
             std::mutex m_FileOpsMutex;
             std::condition_variable m_FileOpsCv;
             std::atomic_bool m_isFileOpsRunning;
+            std::mutex m_rotateMtx;   // serializes the size-check/rename/re-create rotation step
     };
 };  //logger namespace
 

@@ -19,6 +19,7 @@ jobs:
           - { os: ubuntu-24.04, cxx: clang++-18, variant: tsan }
           - { os: ubuntu-24.04, cxx: g++-14,     variant: shared }
           - { os: macos-latest, cxx: clang++,    variant: plain }
+          - { os: macos-15-intel, cxx: clang++,  variant: plain }   # macOS x86_64
           - { os: macos-latest, cxx: clang++,    variant: asan }
           - { os: macos-latest, cxx: clang++,    variant: tsan }
     steps:

@@ -62,7 +62,7 @@ class CommonTestDataGenerator : public ::testing::Test
                 return pathSep;
 
 #ifdef _WIN32
-            pathSep += "\\"
+            pathSep += "\\";
 #elif __linux__ || __APPLE__ || __FreeBSD__ || __OpenBSD__ || __NetBSD__ || __MACH__
             pathSep += "/";
 #endif

@@ -34,11 +34,10 @@ LIB_TYPE ?= static
 CXX := clang++
 
 CXXFLAGS := -std=c++20 -g -Wall -Wextra -Werror -Wno-unused-function -Wpedantic\
-			-I$(INC_DIR) $(addprefix -I, $(wildcard $(INC_DIR)/*))
+			-I$(INC_DIR)
 
 CXXFLAGS_TEST := -std=c++20 -g -Wall -Wextra -Werror -Wno-unused-function -Wpedantic\
-			-I$(INC_DIR) -I$(TEST_DIR) \
-			$(addprefix -I, $(wildcard $(INC_DIR)/*), $(wildcard $(TEST_DIR)/*))
+			-I$(INC_DIR) -I$(TEST_DIR)
 
 ##Track header dependencies so header edits rebuild the objects that include them
 CXXFLAGS += -MMD -MP

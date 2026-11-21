@@ -230,9 +230,8 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
 
         if (m_FilePath.empty())
         {
-            auto pathSeparator = m_FileName.find_last_of('/');
-            if (pathSeparator == std::string::npos) //If it is on windows sytem
-                pathSeparator = m_FileName.find_last_of('\\');
+            // Last separator of either kind, so mixed Windows paths ("C:\\a/b\\c.log") split correctly
+            auto pathSeparator = m_FileName.find_last_of("/\\");
 
             if (pathSeparator != std::string::npos)
             {
@@ -490,6 +489,8 @@ void FileOps::writeDataTo(const std::string_view data)
              * for further logging/writting. Throw
              * exception for any runtime error case.
              */
+            // Size check, rename and re-create must be one step, or two writers can rotate onto the same archive name
+            std::scoped_lock<std::mutex> rotateLock(m_rotateMtx);
             flush(); //Flush the data whatever in the queue waiting to be written
             // Now get the file size
             auto currFileSize = getFileSize();
@@ -549,6 +550,14 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
                 file.flush();
             }
             file.close();
+            // Opening can succeed while writing fails later (e.g. disk full); report it instead of dropping silently
+            if (file.fail())
+            {
+                std::ostringstream osstr;
+                osstr << "WRITING_ERROR : [" << std::this_thread::get_id() << "]: Failed writing log data to file ["
+                      << m_FilePathObj.string() << "]\n";
+                errMsg = osstr.str();
+            }
         }
         else
         {
@@ -580,7 +589,13 @@ bool FileOps::isEmpty()
     m_isFileOpsRunning = true;
     std::ifstream file(m_FilePathObj.string(), std::ios::ate | std::ios::binary);
     if (!file)
+    {
+        // Clear the busy flag on this exit too, or every later file operation waits forever
+        m_isFileOpsRunning = false;
+        fileLock.unlock();
+        m_FileOpsCv.notify_all();
         return false;
+    }
 
     auto retVal = file.tellg();
     file.close();

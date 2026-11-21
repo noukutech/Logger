@@ -39,6 +39,7 @@
 #include "LoggingOps.hpp"
 
 #include <cassert>
+#include <format>
 #include <unordered_map>
 
 namespace logger
@@ -277,7 +278,7 @@ namespace logger
             template<typename ...Args>
             void log(const std::string_view formatStr, Args&&... args)
             {
-                vlog(formatStr, std::make_format_args(std::forward<Args>(args)...));
+                vlog(formatStr, std::make_format_args(args...));  // make_format_args needs lvalues (libstdc++ rejects forwarded rvalues)
             }
 
             /**

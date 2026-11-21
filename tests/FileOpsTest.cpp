@@ -227,12 +227,12 @@ TEST_F(FileOpsTests, testSetFileName)
     }
     fileName = getPathSeperator() + "tmp" + getPathSeperator() + "test" + getPathSeperator() + "TestFileSecond.log";
     expFileExtn = fileName.substr(fileName.find_last_of('.'));
-    expFilePath = fileName.substr(0, fileName.find_last_of('/') + 1);
+    expFilePath = fileName.substr(0, fileName.find_last_of(getPathSeperator()) + 1);
     {
         FileOps fileOps(maxFileSize);
         fileOps.setFileName(fileName);
         std::filesystem::path expFilePathObj(fileName);
-        auto expFileName = fileName.substr(fileName.find_last_of('/') + 1);
+        auto expFileName = fileName.substr(fileName.find_last_of(getPathSeperator()) + 1);
 
         ASSERT_EQ(fileOps.getFileName(), expFileName);
         EXPECT_EQ(fileOps.getFileExtension(), expFileExtn);
@@ -775,7 +775,9 @@ TEST_F(FileOpsTests, testFileLimitExceed)
     for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
     {
         if (entry.path().extension() == ".txt" && entry.is_regular_file())
+        {
             ASSERT_TRUE(FileOps::removeFile(entry.path()));
+        }
     }
     size_t newCnt = 0;
     cnt = newCnt;
@@ -890,4 +892,39 @@ TEST_F(FileOpsTests, testFastRotationKeepsEveryRecord)
     }
     EXPECT_GT(rotated, static_cast<size_t>(2));
     EXPECT_EQ(records, lines);
+}
+
+// Regression: isEmpty() on a missing file returned early with the busy flag still set, hanging the next write.
+TEST_F(FileOpsTests, testIsEmptyOnMissingFileThenWrite)
+{
+    FileOps file(1024 * 1024, generateRandomFileName());
+    EXPECT_FALSE(file.fileExists());
+    EXPECT_FALSE(file.isEmpty());
+    file.write("after_isEmpty");
+    file.readFile();
+    auto contents = file.getFileContent();
+    ASSERT_EQ(1u, contents.size());
+    EXPECT_EQ("after_isEmpty", contents.front());
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Regression: destruction must write every accepted record, including ones never flushed explicitly.
+TEST_F(FileOpsTests, testDestructorDrainsPendingRecords)
+{
+    const auto fileName = generateRandomFileName();
+    constexpr int records = 1000;   // spans several watcher batches
+    std::filesystem::path path;
+    {
+        FileOps file(64 * 1024 * 1024, fileName);
+        for (int i = 0; i < records; ++i)
+            file.write("pending_" + std::to_string(i));
+        path = file.getFilePathObj();
+    }
+    std::ifstream in(path);
+    int lines = 0;
+    for (std::string line; std::getline(in, line);)
+        ++lines;
+    in.close();
+    EXPECT_EQ(records, lines);
+    ASSERT_TRUE(FileOps::removeFile(path));
 }

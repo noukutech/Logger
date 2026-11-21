@@ -33,40 +33,44 @@
 #include <bitset>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 
 using namespace logger;
 
 static std::mutex m_excpFileMtx;
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::ostringstream& oss)
+namespace logger
+{
+/*friend*/ void operator<<(LoggingOps& obj, const std::ostringstream& oss)
 {
     if (oss.good())
         obj.write(oss.str());
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::istringstream& iss)
+/*friend*/ void operator<<(LoggingOps& obj, const std::istringstream& iss)
 {
     if (iss.good())
         obj.write(iss.str());
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::string_view data)
+/*friend*/ void operator<<(LoggingOps& obj, const std::string_view data)
 {
     if (!data.empty())
         obj.write(data);
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::vector<std::string>& dataVec)
+/*friend*/ void operator<<(LoggingOps& obj, const std::vector<std::string>& dataVec)
 {
     if (!dataVec.empty())
         obj.write(dataVec);
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::list<std::string>& dataList)
+/*friend*/ void operator<<(LoggingOps& obj, const std::list<std::string>& dataList)
 {
     if (!dataList.empty())
         obj.write(dataList);
 }
+}   // namespace logger
 
 LoggingOps::LoggingOps()
     : m_DataRecords()
@@ -109,6 +113,12 @@ void LoggingOps::push(const std::string_view data)
     {
         std::array<char, bufferSize> dataRecord{};
         std::scoped_lock<std::mutex> lock(m_DataRecordsMtx);
+        // Admission closes once the watcher has drained and exited; nothing would ever write the record
+        if (m_watcherDone)
+        {
+            addRaisedException(std::make_exception_ptr(std::runtime_error("Log record dropped: logging after shutdown")));
+            return;
+        }
         for (size_t pos = 0; pos < data.size(); pos += chunkSize)
         {
             const auto chunk = data.substr(pos, chunkSize);
@@ -166,11 +176,15 @@ void LoggingOps::keepWatchAndPull()
         dataLock.lock();
         if (success)
             m_writtenSeq += batchSize;
+        // On shutdown keep draining until no accepted record is left, then close admission
+        const bool done = shutdown && m_DataRecords.empty();
+        if (done)
+            m_watcherDone = true;
         dataLock.unlock();
         // Wake flush() waiters
         m_DataRecordsCv.notify_all();
 
-        if (shutdown)
+        if (done)
             break;
     } while (true);
 }
@@ -180,7 +194,8 @@ void LoggingOps::flush()
     std::unique_lock<std::mutex> dataLock(m_DataRecordsMtx);
     // Wait only for records queued before this call, so steady producers cannot starve us
     const auto target = m_pushedSeq;
-    while (m_writtenSeq < target && !m_shutAndExit.load())
+    // Shutdown does not release us early: the watcher drains every accepted record before it exits
+    while (m_writtenSeq < target && !m_watcherDone)
     {
         // Re-arm on every wake-up: the watcher clears m_dataReady when it pops a batch
         if (!m_DataRecords.empty())

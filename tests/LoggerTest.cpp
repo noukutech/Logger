@@ -77,7 +77,9 @@ class LoggerTest : public CommonTestDataGenerator
             EXPECT_TRUE(logStream.str().find(marker) != std::string::npos);
 
             if (!logMsg.empty())
+            {
                 EXPECT_TRUE(logStream.str().find(logMsg) != std::string::npos);
+            }
         }
         static int* funcReturningPointer(const int val1, const int val2) noexcept
         {
@@ -393,4 +395,21 @@ TEST(LoggerConversionTest, unknownLogTypeFallsBackSafely)
     EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum("FATAL"));
     EXPECT_EQ(std::string(), Logger::covertLogTypeEnumToString(static_cast<LOG_TYPE>(-1)));
     EXPECT_EQ(std::string("FATAL"), Logger::covertLogTypeEnumToString(LOG_TYPE::LOG_FATAL));
+}
+
+// Regression: a string_view slice was looked up as a C string, so bytes past the view leaked into the key.
+TEST(LoggerConversionTest, lookupHonorsStringViewLength)
+{
+    const std::string backing = "FATALXYZ";
+    EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum(std::string_view(backing).substr(0, 5)));
+    const char raw[5] = {'F', 'A', 'T', 'A', 'L'};   // deliberately not null-terminated
+    EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum(std::string_view(raw, sizeof(raw))));
+}
+
+// Regression: log() forwarded rvalues into std::make_format_args, which libstdc++ rejects at compile time.
+TEST(LoggerConversionTest, logAcceptsRvalueArguments)
+{
+    Logger logger("%Y");
+    logger.log("{} {}", 42, std::string("rvalue"));
+    EXPECT_NE(std::string::npos, logger.getLogStream().str().find("42 rvalue"));
 }
