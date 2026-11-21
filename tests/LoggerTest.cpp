@@ -82,7 +82,8 @@ class LoggerTest : public CommonTestDataGenerator
         static int* funcReturningPointer(const int val1, const int val2) noexcept
         {
             LOG_ENTRY();
-            static std::unique_ptr<int> pRetVal = std::make_unique<int>(val1 * val2);
+            static std::unique_ptr<int> pRetVal = std::make_unique<int>(0);
+            *pRetVal = val1 * val2;    // static init runs once; assign every call so results don't leak across tests
             LOG_EXIT();
             return pRetVal.get();
         }
