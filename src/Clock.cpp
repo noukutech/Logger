@@ -32,8 +32,45 @@
 #include "Clock.hpp"
 
 #include <iomanip>
+#include <array>
+#include <ctime>
 
 using namespace logger;
+
+namespace
+{
+    // std::localtime/std::gmtime share one static buffer and race across threads; use the reentrant forms
+    std::tm toLocalTm(const std::time_t timeT) noexcept
+    {
+        std::tm tmVal{};
+#if defined(_WIN32)
+        localtime_s(&tmVal, &timeT);
+#else
+        localtime_r(&timeT, &tmVal);
+#endif
+        return tmVal;
+    }
+
+    std::tm toGmtTm(const std::time_t timeT) noexcept
+    {
+        std::tm tmVal{};
+#if defined(_WIN32)
+        gmtime_s(&tmVal, &timeT);
+#else
+        gmtime_r(&timeT, &tmVal);
+#endif
+        return tmVal;
+    }
+
+    // strftime returns 0 (buffer contents unspecified) when the result does not fit
+    std::string formatTm(const std::string_view format, const std::tm& tmVal)
+    {
+        std::array<char, 80> buffer{};
+        const std::string fmtStr(format);
+        const auto len = std::strftime(buffer.data(), buffer.size(), fmtStr.c_str(), &tmVal);
+        return std::string(buffer.data(), len);
+    }
+}
 
 void Clock::start()
 {
@@ -80,7 +117,8 @@ double Clock::getElapsedTime(const TimeUnits& units)
 std::string Clock::getGmtTime() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto gmtTime = std::gmtime(&now);
+    const auto gmtTimeTm = toGmtTm(now);
+    const auto* gmtTime = &gmtTimeTm;
     std::ostringstream oss;
     oss << std::put_time(gmtTime, "%c %Z");
     return oss.str();
@@ -89,7 +127,8 @@ std::string Clock::getGmtTime() const
 std::string Clock::getLocalTime() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTime = std::localtime(&now);
+    const auto localTimeTm = toLocalTm(now);
+    const auto* localTime = &localTimeTm;
     std::ostringstream oss;
     oss << std::put_time(localTime, "%c %Z");
     return oss.str();
@@ -99,28 +138,22 @@ std::string Clock::getGmtTimeStr(const std::string_view format) const
 {
     auto now = std::chrono::system_clock::now();
     auto nowTimeT = std::chrono::system_clock::to_time_t(now);
-    std::array<char, 80> buffer;
-    std::strftime(buffer.data(), sizeof(buffer), 
-                    (format.empty() ? m_strFormat.data() : format.data()), 
-                    std::gmtime(&nowTimeT));
-    return std::string(buffer.data());
+    return formatTm(format.empty() ? std::string_view(m_strFormat) : format, toGmtTm(nowTimeT));
 }
 
 std::string Clock::getLocalTimeStr(const std::string_view format) const
 {
     auto nowTimeT = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTimeT = std::localtime(&nowTimeT);
-    std::array<char, 80> buffer;
-    std::strftime(buffer.data(), sizeof(buffer), 
-                    (format.empty() ? m_strFormat.data() : format.data()), 
-                    localTimeT);
-    return std::string(buffer.data());
+    const auto localTimeTTm = toLocalTm(nowTimeT);
+    const auto* localTimeT = &localTimeTTm;
+    return formatTm(format.empty() ? std::string_view(m_strFormat) : format, *localTimeT);
 }
 
 std::string Clock::getDayOfWeek() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTime = std::localtime(&now);
+    const auto localTimeTm = toLocalTm(now);
+    const auto* localTime = &localTimeTm;
     std::ostringstream oss;
     oss << std::put_time(localTime, "%A");
     return oss.str();
@@ -129,7 +162,8 @@ std::string Clock::getDayOfWeek() const
 std::string Clock::getMonth() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTime = std::localtime(&now);
+    const auto localTimeTm = toLocalTm(now);
+    const auto* localTime = &localTimeTm;
     std::ostringstream oss;
     oss << std::put_time(localTime, "%B");
     return oss.str();
@@ -138,7 +172,8 @@ std::string Clock::getMonth() const
 std::string Clock::getYear() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTime = std::localtime(&now);
+    const auto localTimeTm = toLocalTm(now);
+    const auto* localTime = &localTimeTm;
     std::ostringstream oss;
     oss << std::put_time(localTime, "%Y");
     return oss.str();
@@ -147,14 +182,16 @@ std::string Clock::getYear() const
 std::tuple<int, int, int> Clock::getTimeOfTheDay() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTime = std::localtime(&now);
+    const auto localTimeTm = toLocalTm(now);
+    const auto* localTime = &localTimeTm;
     return std::make_tuple(localTime->tm_hour, localTime->tm_min, localTime->tm_sec);
 }
 
 std::tuple<int, int, int> Clock::getGmtTimeOfTheDay() const
 {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto gmtTime = std::gmtime(&now);
+    const auto gmtTimeTm = toGmtTm(now);
+    const auto* gmtTime = &gmtTimeTm;
     return std::make_tuple(gmtTime->tm_hour, gmtTime->tm_min, gmtTime->tm_sec);
 }
 

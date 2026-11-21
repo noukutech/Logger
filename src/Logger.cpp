@@ -36,13 +36,13 @@ using namespace logger;
 /*static*/LOG_TYPE Logger::convertStringToLogTypeEnum(const std::string_view type) noexcept
 {
     if (type.empty())
-        return m_stringToEnumMap.cend()->second;
+        return LOG_TYPE::LOG_DEFAULT;   // documented fallback; dereferencing cend() was UB
 
     auto itr = m_stringToEnumMap.find(type.data());
     if (itr != m_stringToEnumMap.end())
         return itr->second;
     else
-        return m_stringToEnumMap.cend()->second;
+        return LOG_TYPE::LOG_DEFAULT;
 }
 
 /*static*/std::string Logger::covertLogTypeEnumToString(const LOG_TYPE& type) noexcept
@@ -52,14 +52,16 @@ using namespace logger;
     if (itr != m_EnumToStringMap.end())
         return itr->second;
     else
-        return m_EnumToStringMap.cend()->second;
+        return std::string();   // documented fallback; dereferencing cend() was UB
 }
 
 /*static*/ LoggingOps& Logger::buildLoggingOpsObject() noexcept
 {
-    static std::unique_ptr<LoggingOps> pLoggingOps;
-    static auto initialize = true;  // First time TRUE and then always FALSE
-    while (initialize)
+    // Magic static: initialized exactly once, thread-safe (C++11 and later)
+    static const std::unique_ptr<LoggingOps> pLoggingOps = []() -> std::unique_ptr<LoggingOps>
+    {
+    std::unique_ptr<LoggingOps> pLoggingOps;
+    do
     {
 #if defined(FILE_LOGGING) // Is it going to be a file logging ops?
         std::ostringstream parser;
@@ -89,15 +91,19 @@ using namespace logger;
         parser << LOG_FILE_PATH;
         filePath = parser.str();
         std::filesystem::path path(filePath);
-        if (!std::filesystem::exists(path) && std::filesystem::is_directory(path))
-            break;  // Invalid file path not allowed
+        if (!std::filesystem::is_directory(path))
+            break;  // Invalid file path not allowed (also false when it does not exist)
 #endif // LOG_FILE_PATH
         pLoggingOps.reset(new FileOps(fileSize, fileName, filePath, fileExtn));
 #else   // Plain console logging it is
         pLoggingOps.reset(new ConsoleOps());
 #endif  // FILE_LOGGING
-        initialize = false; // By this time initialization is completed
-    }
+    } while (false);
+    // Invalid file-logging config used to leave this null and crash on dereference; fall back to console
+    if (!pLoggingOps)
+        pLoggingOps.reset(new ConsoleOps());
+    return pLoggingOps;
+    }();
     return *pLoggingOps;
 }
 

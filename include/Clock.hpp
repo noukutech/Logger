@@ -177,7 +177,7 @@ namespace logger
             /**
              * @brief The format for time strings.
              */
-            const std::string_view m_strFormat = "%d/%m/%Y %H:%M:%S";
+            const std::string m_strFormat = "%d/%m/%Y %H:%M:%S";   // owned copy: a string_view dangled when built from a temporary
             /**
              * @brief A boolean flag to indicate if the timer is running.
              */

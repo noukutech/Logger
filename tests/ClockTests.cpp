@@ -31,6 +31,8 @@
 #include <iomanip>
 
 #include <gtest/gtest.h>
+#include <memory>
+#include <vector>
 
 using namespace logger;
 
@@ -281,3 +283,36 @@ TEST_F(ClockTests, testTimerThreadSafety)
     }
 }
 
+
+// Regression: the format was kept as a string_view and dangled when built from a temporary std::string.
+TEST(ClockRegressionTests, formatFromTemporaryStringOutlivesIt)
+{
+    std::unique_ptr<Clock> clock;
+    {
+        std::string fmt = "%Y";
+        clock = std::make_unique<Clock>(fmt);
+        fmt.assign(fmt.size(), 'X');   // overwrite the source buffer
+    }
+    EXPECT_EQ(clock->getYear(), clock->getLocalTimeStr());
+}
+
+// Regression: an oversized strftime result left the buffer unspecified; it must return "" safely.
+TEST(ClockRegressionTests, oversizedFormatReturnsEmpty)
+{
+    Clock clock;
+    EXPECT_EQ(std::string(), clock.getLocalTimeStr(std::string(100, 'A')));
+}
+
+// Concurrency: many threads formatting time at once must agree on the year (shared tm buffer race).
+TEST(ClockRegressionTests, concurrentFormattingIsConsistent)
+{
+    Clock clock;
+    const auto year = clock.getYear();
+    std::vector<std::thread> workers;
+    std::atomic<int> mismatches{0};
+    for (int t = 0; t < 8; ++t)
+        workers.emplace_back([&]() { for (int i = 0; i < 500; ++i) if (clock.getLocalTimeStr("%Y") != year || clock.getGmtTimeStr("%Y").size() != 4) ++mismatches; });
+    for (auto& w : workers)
+        w.join();
+    EXPECT_EQ(0, mismatches.load());
+}

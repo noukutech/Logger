@@ -39,7 +39,6 @@
 #include "LoggingOps.hpp"
 
 #include <cassert>
-#include <fmtmsg.h>
 #include <unordered_map>
 
 namespace logger

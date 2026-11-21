@@ -193,19 +193,19 @@ TEST_F(LoggerTest, testLogList)
  * @see https://github.com/google/googletest/blob/main/docs/advanced.md#death-tests-and-threads
  * for more details.
  */
-TEST_F(LoggerTest, DISABLED_testAssertion)
+TEST_F(LoggerTest, testAssertion)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_DEATH(assertionDeathTest(), "");
 }
 
-TEST_F(LoggerTest, DISABLED_testAssertionWithMsg)
+TEST_F(LoggerTest, testAssertionWithMsg)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_DEATH(assertionMsgDeathTest(), "");
 }
 
-TEST_F(LoggerTest, DISABLED_testFatalError)
+TEST_F(LoggerTest, testFatalError)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_DEATH(fatalDeathTest(), "");
@@ -383,4 +383,14 @@ TEST_F(LoggerTest, testForStdFunctionObject)
     auto val2 = 1000;
     auto result = submit(functor, val1, val2);
     EXPECT_EQ(val1 * val2, *(std::any_cast<int*>(result)));
+}
+
+// Regression: unknown/empty inputs dereferenced cend() (UB). Documented fallbacks are LOG_DEFAULT / "".
+TEST(LoggerConversionTest, unknownLogTypeFallsBackSafely)
+{
+    EXPECT_EQ(LOG_TYPE::LOG_DEFAULT, Logger::convertStringToLogTypeEnum(""));
+    EXPECT_EQ(LOG_TYPE::LOG_DEFAULT, Logger::convertStringToLogTypeEnum("NOT_A_TYPE"));
+    EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum("FATAL"));
+    EXPECT_EQ(std::string(), Logger::covertLogTypeEnumToString(static_cast<LOG_TYPE>(-1)));
+    EXPECT_EQ(std::string("FATAL"), Logger::covertLogTypeEnumToString(LOG_TYPE::LOG_FATAL));
 }
