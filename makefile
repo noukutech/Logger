@@ -40,6 +40,10 @@ CXXFLAGS_TEST := -std=c++20 -g -Wall -Wextra -Werror -Wno-unused-function -Wpeda
 			-I$(INC_DIR) -I$(TEST_DIR) \
 			$(addprefix -I, $(wildcard $(INC_DIR)/*), $(wildcard $(TEST_DIR)/*))
 
+##Track header dependencies so header edits rebuild the objects that include them
+CXXFLAGS += -MMD -MP
+CXXFLAGS_TEST += -MMD -MP
+
 ##Release objects get optimized; debug objects stay at -O0
 OPT_FLAGS := -O2
 
@@ -177,14 +181,14 @@ endif
 
 ##Make tests with static lib
 ifeq ($(LIB_TYPE), static)
-$(TEST_TARGET) : $(TEST_OBJS) | $(BIN_DIR) $(TARGET)
+$(TEST_TARGET) : $(TEST_OBJS) $(TARGET) | $(BIN_DIR)
 	@echo "Linking release test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ $(TEST_LIB_PATHS) -lgtest -lpthread $(LD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LD_FLAGS) -o $@
 	@echo "Linking release test build completed"
 
-$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) | $(BIN_DIR) $(DBG_TARGET)
+$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) $(DBG_TARGET) | $(BIN_DIR)
 	@echo "Linking debug test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ $(TEST_LIB_PATHS) -lgtest -lpthread $(LDD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(DBG_TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LDD_FLAGS) -o $@
 	@echo "Linking debug test build completed"
 
 $(TEST_OBJ_DIR)/%.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
@@ -199,14 +203,14 @@ $(TEST_OBJ_DIR)/%_d.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
 
 ## Make tests with shared lib
 else ifeq ($(LIB_TYPE), shared)
-$(TEST_TARGET) : $(TEST_OBJS) | $(BIN_DIR) $(SHARED_TARGET)
+$(TEST_TARGET) : $(TEST_OBJS) $(SHARED_TARGET) | $(BIN_DIR)
 	@echo "Linking release test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ $(TEST_LIB_PATHS) -lgtest -lpthread $(LD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LD_FLAGS) -o $@
 	@echo "Linking release test build completed"
 
-$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) | $(BIN_DIR) $(SHARED_DBG_TARGET)
+$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) $(SHARED_DBG_TARGET) | $(BIN_DIR)
 	@echo "Linking debug test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ $(TEST_LIB_PATHS) -lgtest -lpthread $(LDD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(DBG_TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LDD_FLAGS) -o $@
 	@echo "Linking debug test build completed"
 
 $(TEST_OBJ_DIR)/%.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
@@ -241,5 +245,7 @@ clean:
 		$(TARGET) $(DBG_TARGET) \
 		$(TEST_TARGET) $(TEST_DBG_TARGET)
 	@echo "Cleaning solution completed"
+
+-include $(OBJS:.o=.d) $(DBG_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(DBG_TEST_OBJS:.o=.d)
 
 .PHONY: all release debug clean

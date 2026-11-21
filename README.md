@@ -89,11 +89,11 @@ make
 
 > **Note**: The library will be built as a static library by default. You can change the `LIB_TYPE` variable in the `makefile` to `shared` if you want to build it as a shared library.
 > Release build will be created by default. You can change the `BUILD_TYPE` variable in the `makefile` to `debug` if you want to build it as a debug library. `all` target will build both release and debug libraries.
-> By default Tests are not built. You can change the `BUILD_TESTS` variable in the `makefile` to `yes` to build the tests.
+> By default Tests are not built. You can change the `BUILD_TEST` variable in the `makefile` to `yes` to build the tests.
 > If you want to do this all in one line rather than changing the `makefile`, you can run the following command:
 
 ```bash
-make clean; make LIB_TYPE=shared BUILD_TYPE=debug BUILD_TESTS=yes
+make clean; make LIB_TYPE=shared BUILD_TYPE=debug BUILD_TEST=yes
 ```
 
 #### Install the library
@@ -126,7 +126,7 @@ Where `buildNinstall.sh` is a script that will build the library and install it 
 - `-LIB_TYPE`: Set the library type (static or shared). Default is static.
 - `-FILE_LOGGING`: Enable file logging. Default is no.
 - `-LOG_FILE_NAME`: Set the log file name. Default is Logger.log.
-- `-BUILD_TESTS`: Enable building tests. Default is no.
+- `-BUILD_TEST`: Enable building tests. Default is no.
 
 > **Note**: The script will automatically download and install the `fmt` library if it is not already installed.
 > The default installation locations are:
