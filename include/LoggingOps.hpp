@@ -34,6 +34,7 @@
 #include <list>
 #include <array>
 #include <mutex>
+#include <cstdint>
 #include <thread>
 #include <atomic>
 #include <exception>
@@ -107,7 +108,7 @@ namespace logger
              * @note This function is thread safe. It uses mutex to ensure that
              * only one thread can add an exception at a time.
              */
-            inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { m_excpPtrVec.emplace_back(excpPtr); }
+            inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 
             /**
              * @brief Default constructor for LoggingOps class
@@ -425,11 +426,18 @@ namespace logger
              */
             void push(const std::string_view data);
 
+            // Stop and join the watcher after it drains pending records. Derived classes must
+            // call this in their destructor so the watcher never calls into a destroyed override.
+            void stopWatcher();
+
             BufferQ m_DataRecords;
             std::mutex m_DataRecordsMtx;
             std::condition_variable m_DataRecordsCv;
             std::atomic_bool m_dataReady;
             std::atomic_bool m_shutAndExit;
+            // Records pushed / written so far; guarded by m_DataRecordsMtx, used by flush()
+            std::uint64_t m_pushedSeq = 0;
+            std::uint64_t m_writtenSeq = 0;
             std::thread m_watcher;
 
             /**
@@ -438,6 +446,7 @@ namespace logger
              * during the data operations.
              */
             std::vector<std::exception_ptr> m_excpPtrVec;
+            std::mutex m_excpMtx;   // guards m_excpPtrVec
 
         private:
             /**

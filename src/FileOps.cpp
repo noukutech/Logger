@@ -285,6 +285,7 @@ FileOps::FileOps(const std::uintmax_t maxFileSize,
 
 FileOps::~FileOps()
 {
+    stopWatcher();
 }
 
 FileOps& FileOps::setFileName(const std::string_view fileName)
@@ -340,19 +341,21 @@ std::uintmax_t FileOps::getFileSize()
 bool FileOps::createFile()
 {
     auto retVal = false;
-    if (!fileExists())
     {
-        std::scoped_lock<std::mutex> lock(m_FileOpsMutex);
-        m_isFileOpsRunning = true;
-        std::ofstream file(m_FilePathObj);
-        if (file.is_open())
+        std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
+        m_FileOpsCv.wait(fileLock, [this] { return !m_isFileOpsRunning; });
+        // Check and create under the lock; append mode never truncates a file another thread just created
+        if (!fileExists())
         {
-            file.close();
-            retVal = true;
+            std::ofstream file(m_FilePathObj, std::ios::app);
+            if (file.is_open())
+            {
+                file.close();
+                retVal = true;
+            }
         }
     }
-    m_isFileOpsRunning = false;
-    m_FileOpsCv.notify_one();
+    m_FileOpsCv.notify_all();
     return retVal;
 }
 
@@ -364,7 +367,8 @@ bool FileOps::deleteFile()
         std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
         m_FileOpsCv.wait(fileLock, [this] { return !m_isFileOpsRunning; });
         m_isFileOpsRunning = true;
-        retVal = std::filesystem::remove(m_FilePathObj);
+        std::error_code ec;   // non-throwing overload keeps m_isFileOpsRunning from getting stuck
+        retVal = std::filesystem::remove(m_FilePathObj, ec);
         m_isFileOpsRunning = false;
         fileLock.unlock();
         m_FileOpsCv.notify_one();
@@ -386,11 +390,13 @@ bool FileOps::renameFile(const std::string_view newFileName)
         m_isFileOpsRunning = true;
 
         std::filesystem::path newPath = m_FilePathObj.parent_path() / newFileName;
-        std::filesystem::rename(m_FilePathObj, newPath);
+        // error_code overload: a throw here used to leave m_isFileOpsRunning stuck true and hang all writers
+        std::error_code ec;
+        std::filesystem::rename(m_FilePathObj, newPath, ec);
         m_isFileOpsRunning = false;
         lock.unlock();
         m_FileOpsCv.notify_all();
-        success = true;
+        success = !ec;
     }
     return success;
 }
@@ -466,7 +472,8 @@ void FileOps::writeDataTo(const std::string_view data)
 
         if (!fileExists())
         {
-            if (createFile())
+            // Another writer may have created it first; that is fine
+            if (createFile() || fileExists())
                 push(data);
             else
                 throw std::runtime_error("File neither exists nor can be created");
@@ -492,8 +499,12 @@ void FileOps::writeDataTo(const std::string_view data)
                 auto currentTimeStr = clock.getLocalTimeStr("%d%m%Y_%H%M%S");
                 auto currentFileName = getFileName();
                 auto currentFileExtension = getFileExtension();
-                auto newFileName = currentFileName.substr(0, currentFileName.find(currentFileExtension))
-                                     + "_" + currentTimeStr + currentFileExtension;
+                const auto baseName = currentFileName.substr(0, currentFileName.find(currentFileExtension))
+                                     + "_" + currentTimeStr;
+                auto newFileName = baseName + currentFileExtension;
+                // Two rotations within one second must not overwrite the earlier rotated file
+                for (int suffix = 1; std::filesystem::exists(m_FilePathObj.parent_path() / newFileName); ++suffix)
+                    newFileName = baseName + "_" + std::to_string(suffix) + currentFileExtension;
                 if (renameFile(newFileName))
                 {
                     setFileName(currentFileName);
@@ -509,7 +520,7 @@ void FileOps::writeDataTo(const std::string_view data)
     }
     catch(...)
     {
-        m_excpPtrVec.emplace_back(std::current_exception());
+        addRaisedException(std::current_exception());
     }
 }
 
@@ -526,7 +537,7 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
         m_isFileOpsRunning = true;
 
         std::ofstream file(m_FilePathObj, std::ios::out | std::ios::app | std::ios::binary);
-        std::array<char, bufferSize> data;
+        std::array<char, bufferSize> data{};
         if (file.is_open())
         {
             while (!dataQueue.empty())

@@ -36,6 +36,8 @@
 #include "CommonFunc.hpp"
 
 #include <bitset>
+#include <thread>
+#include <set>
 
 using namespace logger;
 
@@ -783,4 +785,109 @@ TEST_F(FileOpsTests, testFileLimitExceed)
             ++newCnt;
     }
     EXPECT_EQ(cnt, newCnt);
+}
+
+// Regression: records longer than one 4 KB buffer were split with one byte dropped per chunk.
+TEST_F(FileOpsTests, testLongRecordKeepsEveryByte)
+{
+    std::string longRecord;
+    for (size_t i = 0; i < 10000; ++i)
+        longRecord.push_back(static_cast<char>('a' + (i % 26)));
+
+    FileOps file(1024 * 1024, generateRandomFileName());
+    file.write(longRecord);
+    file.readFile();
+    auto fileContents = file.getFileContent();
+    std::string joined;
+    while (!fileContents.empty())
+    {
+        joined += fileContents.front();
+        fileContents.pop();
+    }
+    EXPECT_EQ(longRecord.size(), joined.size());
+    EXPECT_EQ(longRecord, joined);
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Regression: flush() only slept 200us, so a read right after writing could miss queued records.
+TEST_F(FileOpsTests, testFlushWaitsForQueuedRecords)
+{
+    constexpr size_t lines = 3000;
+    FileOps file(64 * 1024 * 1024, generateRandomFileName());
+    for (size_t i = 0; i < lines; ++i)
+        file.write("line_" + std::to_string(i));
+    file.flush();
+    file.readFile();
+    auto fileContents = file.getFileContent();
+    ASSERT_EQ(lines, fileContents.size());
+    for (size_t i = 0; i < lines; ++i)
+    {
+        EXPECT_EQ("line_" + std::to_string(i), fileContents.front());
+        fileContents.pop();
+    }
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Stress: concurrent writers must not lose, duplicate or corrupt records.
+TEST_F(FileOpsTests, testConcurrentWritersLoseNothing)
+{
+    constexpr int threads = 8;
+    constexpr int perThread = 250;
+    FileOps file(64 * 1024 * 1024, generateRandomFileName());
+    std::vector<std::thread> writers;
+    for (int t = 0; t < threads; ++t)
+    {
+        writers.emplace_back([&file, t]()
+        {
+            for (int i = 0; i < perThread; ++i)
+                file.write("T" + std::to_string(t) + "_" + std::to_string(i));
+        });
+    }
+    for (auto& w : writers)
+        w.join();
+
+    file.readFile();
+    auto fileContents = file.getFileContent();
+    ASSERT_EQ(static_cast<size_t>(threads * perThread), fileContents.size());
+    std::set<std::string> seen;
+    while (!fileContents.empty())
+    {
+        seen.insert(fileContents.front());
+        fileContents.pop();
+    }
+    EXPECT_EQ(static_cast<size_t>(threads * perThread), seen.size());
+    for (int t = 0; t < threads; ++t)
+        for (int i = 0; i < perThread; ++i)
+            EXPECT_TRUE(seen.count("T" + std::to_string(t) + "_" + std::to_string(i))) << t << "_" << i;
+    EXPECT_TRUE(file.getAllExceptions().empty());
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Regression: rotations within the same second reused one name and rename() overwrote the earlier rotated file.
+TEST_F(FileOpsTests, testFastRotationKeepsEveryRecord)
+{
+    const auto prefix = "rot_" + generateRandomText(8);
+    constexpr int records = 400;
+    {
+        FileOps file(512, prefix + ".log");
+        for (int i = 0; i < records; ++i)
+            file.write("record_" + std::to_string(i));
+        file.flush();
+        EXPECT_TRUE(file.getAllExceptions().empty());
+    }
+    size_t rotated = 0;
+    int lines = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
+    {
+        if (entry.path().filename().string().rfind(prefix, 0) != 0)
+            continue;
+        ++rotated;
+        std::ifstream in(entry.path());
+        for (std::string line; std::getline(in, line);)
+            ++lines;
+        in.close();
+        ASSERT_TRUE(FileOps::removeFile(entry.path()));
+    }
+    EXPECT_GT(rotated, static_cast<size_t>(2));
+    EXPECT_EQ(records, lines);
 }

@@ -50,6 +50,7 @@ ConsoleOps::ConsoleOps()
 
 ConsoleOps::~ConsoleOps()
 {
+    stopWatcher();
 }
 
 void ConsoleOps::writeDataTo(const std::string_view data)
