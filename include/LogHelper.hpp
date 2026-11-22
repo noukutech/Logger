@@ -107,6 +107,29 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
+    // Caller must hold raceMtx: loggerObj and its assertion condition are shared across threads
+    template<typename ...Args>
+    inline void logMsgLocked
+    (   const std::string_view fileName,
+        const std::string_view funcName,
+        const std::string_view marker,
+        const size_t lineNo,
+        const std::thread::id& tid,
+        const LOG_TYPE& logType,
+        const std::string_view format_str,
+        Args&&... args
+    )
+    {
+        loggerObj.setFileName(std::string(fileName))
+                .setFunctionName(std::string(funcName))
+                .setLineNo(lineNo)
+                .setThreadId(tid)
+                .setMarker(std::string(marker))
+                .setLogType(logType);
+        loggerObj.log(format_str, args...);
+        loggingOps << loggerObj.getLogStream().str();
+    }
+
     template<typename ...Args>
     inline void logMsg
     (   const std::string_view fileName,
@@ -125,15 +148,7 @@ namespace logger
         // a hold of this beautiful lady at the same
         // point of time.
         std::lock_guard<std::mutex> raceLock(raceMtx);
-        loggerObj.setFileName(fileName.data())
-                .setFunctionName(funcName.data())
-                .setLineNo(lineNo)
-                .setThreadId(tid)
-                .setMarker(marker.data())
-                .setLogType(logType);
-
-        loggerObj.log(format_str, args...);
-        loggingOps << loggerObj.getLogStream().str();
+        logMsgLocked(fileName, funcName, marker, lineNo, tid, logType, format_str, args...);
     }
 
     /**
@@ -487,18 +502,21 @@ namespace logger
         if (cond.empty())
             return;
 
-        loggerObj.setAssertCondition(cond.data()); // Set the assertion condition
-        logMsg( fileName,
-                funcName,
-                FORWARD_ANGLE,
-                lineNo,
-                std::this_thread::get_id(),
-                LOG_TYPE::LOG_ASSERT,
-                format_str,
-                args...);
-
-        loggingOps.flush();   // abort/exit skip destructors; a queued assertion record would be lost
-        std::lock_guard<std::mutex> lock(raceMtx);
+        {
+            // Condition and record under one lock, so a concurrent log call cannot clear it or take it
+            std::lock_guard<std::mutex> raceLock(raceMtx);
+            loggerObj.setAssertCondition(std::string(cond));
+            logMsgLocked(fileName,
+                         funcName,
+                         FORWARD_ANGLE,
+                         lineNo,
+                         std::this_thread::get_id(),
+                         LOG_TYPE::LOG_ASSERT,
+                         format_str,
+                         args...);
+        }
+        // Lock released first: atexit handlers may log, and abort/exit skip destructors so flush now
+        loggingOps.flush();
         if (exitGracefuly)
         {
             std::exit(EXIT_FAILURE);

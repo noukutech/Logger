@@ -59,6 +59,7 @@ namespace
             GatedSink() { m_watcher = std::thread([this]() { keepWatchAndPull(); }); }
             ~GatedSink() override { release(); stopWatcher(); }
             void shutdown() { stopWatcher(); }
+            bool shuttingDown() { std::scoped_lock<std::mutex> lock(m_DataRecordsMtx); return m_shutAndExit.load(); }
             const std::string getClassId() const override { return "GatedSink"; }
             void release() { std::call_once(m_released, [this]() { m_gate.set_value(); }); }
             std::atomic<size_t> written{0};
@@ -163,19 +164,25 @@ TEST(LoggingOpsShutdownTest, shutdownDoesNotReleasePendingFlushEarly)
     for (int i = 0; i < 10; ++i)
         sink.write(std::string_view("pending"));
     std::atomic<bool> flushed{false};
+    std::atomic<bool> stopped{false};
     std::thread flusher([&]() { sink.flush(); flushed = true; });
     const bool entered = waitFor([&]() { return sink.writerEntered.load(); }, 2000ms);
 
-    std::thread stopper([&]() { sink.shutdown(); });   // shutdown starts while the batch is still gated
-    std::this_thread::sleep_for(100ms);
+    std::thread stopper([&]() { sink.shutdown(); stopped = true; });
+    // Shutdown must actually have begun while the batch is still gated, or this test proves nothing
+    const bool shutdownBegan = waitFor([&]() { return sink.shuttingDown(); }, 2000ms);
+    std::this_thread::sleep_for(50ms);
     const bool flushedDuringShutdown = flushed;
+    const bool stoppedWhileGated = stopped;
 
     sink.release();
     flusher.join();
     stopper.join();
 
     EXPECT_TRUE(entered) << "watcher never picked up the batch";
+    EXPECT_TRUE(shutdownBegan) << "shutdown flag was never observed while the writer was gated";
     EXPECT_FALSE(flushedDuringShutdown) << "shutdown released flush() before its batch was written";
+    EXPECT_FALSE(stoppedWhileGated) << "stopWatcher() returned before the in-flight batch was written";
     EXPECT_EQ(10u, sink.written.load());
 }
 
