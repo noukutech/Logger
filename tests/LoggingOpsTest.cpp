@@ -392,4 +392,28 @@ TEST(LoggingOpsFaultTest, partialPushStillCountsStoredChunks)
     ASSERT_FALSE(got.empty());
     EXPECT_EQ("after-partial-push", got.back()) << "flush() returned before its own record was written";
 }
+
+// Regression: a partial push that crossed the 256-record wake-up threshold and then threw skipped
+// the watcher notification, so accepted records waited for some later write or flush.
+TEST(LoggingOpsFaultTest, partialPushPastThresholdWakesWatcher)
+{
+    RecordingSink sink;
+    for (int i = 0; i < 255; ++i)
+        sink.write(std::string_view("pre"));          // one below the threshold: watcher stays asleep
+    // 40 chunks; the fault lands after at least one more chunk is stored on both libc++ and libstdc++
+    const std::string big(40 * (bufferSize - 1), 'x');
+    t_failAfterChunkAllocs = 1;
+    EXPECT_THROW(sink.write(std::string_view(big)), std::bad_alloc);
+    t_failAfterChunkAllocs = -1;
+
+    // No flush(): the threshold alone must have woken the watcher
+    bool drained = false;
+    for (int i = 0; i < 3000 && !drained; ++i)
+    {
+        drained = sink.written().size() >= 256;
+        if (!drained)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(drained) << "watcher was not woken after a partial push crossed the threshold";
+}
 #endif  // LOGGER_TEST_SANITIZED

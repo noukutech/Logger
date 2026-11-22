@@ -146,6 +146,7 @@ void LoggingOps::push(const std::string_view data)
         return;
 
     bool notifyWatcher = false;
+    std::exception_ptr pushFailure = nullptr;
     {
         std::scoped_lock<std::mutex> lock(m_DataRecordsMtx);
         // Admission closes as soon as shutdown starts, so steady producers cannot keep the watcher from exiting
@@ -154,7 +155,15 @@ void LoggingOps::push(const std::string_view data)
             addRaisedException(std::make_exception_ptr(std::runtime_error("Log record dropped: logging after shutdown")));
             return;
         }
-        appendChunks(m_DataRecords, data, [this]() { ++m_pushedSeq; });
+        try
+        {
+            appendChunks(m_DataRecords, data, [this]() { ++m_pushedSeq; });
+        }
+        catch (...)
+        {
+            // Chunks stored before the failure are accepted; still apply the wake-up rule below
+            pushFailure = std::current_exception();
+        }
         // Once the queue holds at least 256 records, wake the watcher to write them out
         if (m_DataRecords.size() >= 256)
         {
@@ -164,6 +173,8 @@ void LoggingOps::push(const std::string_view data)
     }
     if (notifyWatcher)
         m_DataRecordsCv.notify_all();
+    if (pushFailure)
+        std::rethrow_exception(pushFailure);
 }
 
 bool LoggingOps::pop(BufferQ& data)
