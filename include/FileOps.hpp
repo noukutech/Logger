@@ -4,7 +4,7 @@
  *        writing, appending, renaming, and deleting files, with thread-safe mechanisms.
  *        Supports file size limits, file content buffering, and exception handling.
  *
- * Author: Swarnendu
+ * Author: Nouku Technologies
  * Date: May, 2025
  *
  * MIT License

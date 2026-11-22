@@ -8,7 +8,7 @@
  * It also provides functions to get the current GMT and local time, formatted time strings, 
  * and components of the current time such as day of the week, month, and year.
  *
- * @author Swarnendu Roy Chowdhury
+ * @author Nouku Technologies
  * @date 12/02/2025
  * @version 1.0
  * 

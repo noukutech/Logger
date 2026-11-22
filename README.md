@@ -78,7 +78,7 @@ This Logger library offers simple logging capabilities, including multiple log l
 Clone the repository:
 
 ```bash
-git clone https://github.com/SwarnenduRC/Logger.git
+git clone https://github.com/noukutech/Logger.git
 cd Logger
 ```
 
@@ -331,8 +331,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-Maintainer: Swarnendu Roy Chowdhury
-GitHub: [SwarnenduRC](https://github.com/SwarnenduRC)
+Maintainer: Nouku Technologies
+GitHub: [noukutech](https://github.com/noukutech)
 
 ---
 

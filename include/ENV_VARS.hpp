@@ -23,7 +23,7 @@
  */
 
 /*
- * Author: Swarnendu RC
+ * Author: Nouku Technologies
  *
  * NOTE: This file is auto-generated. Do NOT modify this file manually.
  *       If changes are needed, please modify the generating Python script:
