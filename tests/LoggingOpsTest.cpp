@@ -300,26 +300,32 @@ TEST(TerminalRecordTest, failedTerminalWriteIsReported)
     EXPECT_GT(sink.failureCount(), 0u);
 }
 
+// Fault injection replaces the global operator new, which sanitizer runtimes also replace, so this
+// test is compiled only in non-sanitizer builds (plain release/debug on every platform and in CI).
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#  define LOGGER_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#    define LOGGER_TEST_SANITIZED 1
+#  endif
+#endif
+
+#ifndef LOGGER_TEST_SANITIZED
 #include <cstdlib>
 #include <new>
 
 namespace
 {
-    // Global operator new hook: once armed, the Nth matching allocation of a BufferQ node throws.
-    std::atomic<int> g_failAfterChunkAllocs{-1};
+    // Armed per thread: only the test thread's allocations fail, never the watcher's
+    // (a throw there has no handler and would std::terminate).
+    thread_local int t_failAfterChunkAllocs = -1;
 
     bool shouldFailChunkAlloc(std::size_t size)
     {
-        // A deque node of std::array<char, bufferSize> is at least one record in size
-        if (size < bufferSize)
+        // A queue node holding at least one record is at least one record in size
+        if (t_failAfterChunkAllocs < 0 || size < bufferSize)
             return false;
-        int remaining = g_failAfterChunkAllocs.load();
-        while (remaining >= 0)
-        {
-            if (g_failAfterChunkAllocs.compare_exchange_weak(remaining, remaining - 1))
-                return remaining == 0;
-        }
-        return false;
+        return t_failAfterChunkAllocs-- == 0;
     }
 
     class RecordingSink : public LoggingOps
@@ -356,8 +362,15 @@ void* operator new(std::size_t size)
         return p;
     throw std::bad_alloc();
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"   // deliberate: this pair is malloc/free based
+#endif
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 // Regression: push() added all chunks to m_pushedSeq only after every chunk was stored. If a later
 // chunk's allocation threw, the stored chunks were written but never counted as accepted, so
@@ -368,9 +381,9 @@ TEST(LoggingOpsFaultTest, partialPushStillCountsStoredChunks)
     // 17 chunks: crosses a deque block boundary with both libc++ (16 records/block) and
     // libstdc++ (1 record/node), so the second large allocation fails mid-record on both.
     const std::string big(17 * (bufferSize - 1), 'x');
-    g_failAfterChunkAllocs = 1;
+    t_failAfterChunkAllocs = 1;
     EXPECT_THROW(sink.write(std::string_view(big)), std::bad_alloc);
-    g_failAfterChunkAllocs = -1;
+    t_failAfterChunkAllocs = -1;
     EXPECT_TRUE(sink.accountingConsistent()) << "stored chunks were not counted as accepted";
 
     sink.write(std::string_view("after-partial-push"));
@@ -379,3 +392,4 @@ TEST(LoggingOpsFaultTest, partialPushStillCountsStoredChunks)
     ASSERT_FALSE(got.empty());
     EXPECT_EQ("after-partial-push", got.back()) << "flush() returned before its own record was written";
 }
+#endif  // LOGGER_TEST_SANITIZED
