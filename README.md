@@ -19,7 +19,7 @@ A lightweight, efficient, and easy-to-use logging utility library for C++ projec
 
 ## Overview
 
-This Logger library offers simple logging capabilities, including multiple log levels, formatted output, and timestamping. It is designed to be lightweight, performant, and straightforward to integrate into any C++ project (min version C++-20) without complicated setup or heavy dependencies. Please note that this currently supports only MacOS and Linux platforms.
+This Logger library offers simple logging capabilities, including multiple log levels, formatted output, and timestamping. It is designed to be lightweight, performant, and straightforward to integrate into any C++ project (min version C++-20) without complicated setup or heavy dependencies. Supported platforms (64-bit only): macOS (arm64, x86_64), Linux (x86_64, arm64) and Windows (x86_64, via MinGW-w64 under MSYS2 UCRT64; MSVC is not supported because the build is a GNU makefile). See [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md) for the verification evidence.
 
 ## Features
 
@@ -70,7 +70,9 @@ This Logger library offers simple logging capabilities, including multiple log l
 ### Prerequisits
 
 - C++ compiler supporting `C++-20` (e.g., GCC 10+, Clang 10+)
-- make for building the library (currently build process is make based and uses `clang++` for compilation)
+- make for building the library (make based; `clang++` by default, override with e.g. `make CXX=g++-14`)
+- On macOS, Homebrew include/lib paths are picked up automatically (`brew --prefix`), so Homebrew's `googletest` works on Apple Silicon without extra flags
+- On Windows, build inside an MSYS2 UCRT64 shell with `make`, `mingw-w64-ucrt-x86_64-gcc` (or `-clang`) and `mingw-w64-ucrt-x86_64-gtest` installed
 - Google Test framework for running tests (optional, but recommended)
 - `fmt` library for formatting (if not installed already, it will be downloaded and installed during the build process)
 
@@ -212,6 +214,18 @@ by running following command:
 
 - `--gtest_shuffle` Shuffles the test cases in each iteration (optional)
 - `--gtest_repeat=3` Repeats the test cases at least 3 times (optional)
+
+Sanitizer builds: pass the flags through `CXX` and use separate output directories so objects are never reused across variants:
+
+```bash
+make OBJ_DIR=build/tsan/obj LIB_DIR=build/tsan/lib BIN_DIR=build/tsan/bin TEST_OBJ_DIR=build/tsan/obj/test \
+     CXX="clang++ -fsanitize=thread" BUILD_TYPE=debug BUILD_TEST=yes
+./build/tsan/bin/TestLogger_d --gtest_shuffle --gtest_repeat=5
+```
+
+`tests/fatal_flush_check.sh [compiler]` (run from the repo root) builds small file-logging programs and checks that `LOG_FATAL`/`LOG_ASSERT` records reach the log file before the process aborts or exits. The gtest death tests cannot observe this because they log to the console.
+
+CI (`.github/workflows/ci.yml`) runs the suite on Linux (gcc/clang, ASan+LSan, TSan, shared), macOS (arm64 and Intel, ASan, TSan) and Windows (MinGW-w64 gcc/clang).
 
 ![Test cases run](docs/TestCases.png)
 
