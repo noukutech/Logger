@@ -532,6 +532,7 @@ namespace logger
                 std::fputc(c, stderr);
         }
         std::fputs(" [logger: sink failed to write this record]\n", stderr);
+        std::fflush(stderr);   // stderr may be fully buffered by the host; abort() would discard it
     }
 
     /**
@@ -545,9 +546,16 @@ namespace logger
      */
     inline bool persistTerminalRecord(LoggingOps& sink, const std::string_view record)
     {
-        sink.flush();
-        if (sink.writeRecordNow(record))
-            return true;
+        try
+        {
+            sink.flush();
+            if (sink.writeRecordNow(record))
+                return true;
+        }
+        catch (...)
+        {
+            // The record is already formatted; fall through to the stderr copy before terminating
+        }
         writeEscapedToStderr(record);
         return false;
     }

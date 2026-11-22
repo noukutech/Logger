@@ -105,21 +105,21 @@ void LoggingOps::stopWatcher()
 namespace
 {
     // Split a record into null-terminated chunks; the last byte of every chunk is reserved for '\0'.
-    // Returns the number of chunks appended.
-    size_t appendChunks(BufferQ& queue, const std::string_view data)
+    // `onPushed` runs after each chunk is stored, so a throw on a later chunk leaves every
+    // already-stored chunk accounted for.
+    template<typename OnPushed>
+    void appendChunks(BufferQ& queue, const std::string_view data, OnPushed onPushed)
     {
         constexpr size_t chunkSize = bufferSize - 1;
         std::array<char, bufferSize> dataRecord{};
-        size_t count = 0;
         for (size_t pos = 0; pos < data.size(); pos += chunkSize)
         {
             const auto chunk = data.substr(pos, chunkSize);
             std::copy(chunk.begin(), chunk.end(), dataRecord.begin());
             std::fill(dataRecord.begin() + chunk.size(), dataRecord.end(), '\0');
             queue.push(dataRecord);
-            ++count;
+            onPushed();
         }
-        return count;
     }
 }
 
@@ -128,12 +128,16 @@ bool LoggingOps::writeRecordNow(const std::string_view record)
     if (record.empty())
         return true;
     BufferQ single;
-    appendChunks(single, record);
+    appendChunks(single, record, []() {});
     std::exception_ptr excpPtr = nullptr;
     writeToOutStreamObject(std::move(single), excpPtr);
     if (excpPtr)
-        addRaisedException(excpPtr);
-    return !excpPtr;
+    {
+        // Best effort: the result below must not depend on being able to store the error
+        try { addRaisedException(excpPtr); } catch (...) {}
+        return false;
+    }
+    return true;
 }
 
 void LoggingOps::push(const std::string_view data)
@@ -150,7 +154,7 @@ void LoggingOps::push(const std::string_view data)
             addRaisedException(std::make_exception_ptr(std::runtime_error("Log record dropped: logging after shutdown")));
             return;
         }
-        m_pushedSeq += appendChunks(m_DataRecords, data);
+        appendChunks(m_DataRecords, data, [this]() { ++m_pushedSeq; });
         // Once the queue holds at least 256 records, wake the watcher to write them out
         if (m_DataRecords.size() >= 256)
         {
@@ -194,7 +198,10 @@ void LoggingOps::keepWatchAndPull()
             std::thread writerThread([this, &dataq, &excpPtr](){ writeToOutStreamObject(std::move(dataq), excpPtr); });
             writerThread.join();
             if (excpPtr)
-                addRaisedException(excpPtr);
+            {
+                // Best effort: the watcher must keep running and advance m_writtenSeq, or flush() would hang
+                try { addRaisedException(excpPtr); } catch (...) {}
+            }
         }
 
         dataLock.lock();

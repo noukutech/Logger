@@ -132,7 +132,7 @@ static constexpr std::string_view DEFAULT_FILE_EXTN = ".txt";
     catch(...)
     {
         auto excpPtr = std::current_exception();
-        file.addRaisedException(excpPtr);
+        try { file.addRaisedException(excpPtr); } catch (...) {}   // best effort; keep noexcept
     }
     return false;
 }
@@ -177,7 +177,7 @@ static constexpr std::string_view DEFAULT_FILE_EXTN = ".txt";
     catch(...)
     {
         auto excpPtr = std::current_exception();
-        file.addRaisedException(excpPtr);
+        try { file.addRaisedException(excpPtr); } catch (...) {}   // best effort; keep noexcept
     }
     return false;
 }
@@ -503,7 +503,7 @@ void FileOps::writeDataTo(const std::string_view data)
     }
     catch(...)
     {
-        addRaisedException(std::current_exception());
+        try { addRaisedException(std::current_exception()); } catch (...) {}   // best effort
     }
 }
 

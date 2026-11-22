@@ -299,3 +299,83 @@ TEST(TerminalRecordTest, failedTerminalWriteIsReported)
     EXPECT_EQ(0u, sink.terminalWrites.load());
     EXPECT_GT(sink.failureCount(), 0u);
 }
+
+#include <cstdlib>
+#include <new>
+
+namespace
+{
+    // Global operator new hook: once armed, the Nth matching allocation of a BufferQ node throws.
+    std::atomic<int> g_failAfterChunkAllocs{-1};
+
+    bool shouldFailChunkAlloc(std::size_t size)
+    {
+        // A deque node of std::array<char, bufferSize> is at least one record in size
+        if (size < bufferSize)
+            return false;
+        int remaining = g_failAfterChunkAllocs.load();
+        while (remaining >= 0)
+        {
+            if (g_failAfterChunkAllocs.compare_exchange_weak(remaining, remaining - 1))
+                return remaining == 0;
+        }
+        return false;
+    }
+
+    class RecordingSink : public LoggingOps
+    {
+        public:
+            RecordingSink() { m_watcher = std::thread([this]() { keepWatchAndPull(); }); }
+            ~RecordingSink() override { stopWatcher(); }
+            const std::string getClassId() const override { return "RecordingSink"; }
+            std::vector<std::string> written() { std::scoped_lock<std::mutex> l(m_mtx); return m_written; }
+            // Records accepted but not yet written must equal what is actually queued
+            bool accountingConsistent()
+            {
+                std::scoped_lock<std::mutex> l(m_DataRecordsMtx);
+                return m_pushedSeq - m_writtenSeq == m_DataRecords.size();
+            }
+        protected:
+            void writeDataTo(const std::string_view data) override { push(data); }
+            void writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&) override
+            {
+                std::scoped_lock<std::mutex> l(m_mtx);
+                while (!dataQueue.empty()) { m_written.emplace_back(dataQueue.front().data()); dataQueue.pop(); }
+            }
+        private:
+            std::mutex m_mtx;
+            std::vector<std::string> m_written;
+    };
+}
+
+void* operator new(std::size_t size)
+{
+    if (shouldFailChunkAlloc(size))
+        throw std::bad_alloc();
+    if (void* p = std::malloc(size ? size : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+
+// Regression: push() added all chunks to m_pushedSeq only after every chunk was stored. If a later
+// chunk's allocation threw, the stored chunks were written but never counted as accepted, so
+// m_writtenSeq ran ahead and a later flush() could return before its own record was attempted.
+TEST(LoggingOpsFaultTest, partialPushStillCountsStoredChunks)
+{
+    RecordingSink sink;
+    // 17 chunks: crosses a deque block boundary with both libc++ (16 records/block) and
+    // libstdc++ (1 record/node), so the second large allocation fails mid-record on both.
+    const std::string big(17 * (bufferSize - 1), 'x');
+    g_failAfterChunkAllocs = 1;
+    EXPECT_THROW(sink.write(std::string_view(big)), std::bad_alloc);
+    g_failAfterChunkAllocs = -1;
+    EXPECT_TRUE(sink.accountingConsistent()) << "stored chunks were not counted as accepted";
+
+    sink.write(std::string_view("after-partial-push"));
+    sink.flush();
+    const auto got = sink.written();
+    ASSERT_FALSE(got.empty());
+    EXPECT_EQ("after-partial-push", got.back()) << "flush() returned before its own record was written";
+}

@@ -125,7 +125,7 @@ namespace logger
              */
             bool writeRecordNow(const std::string_view record);
 
-            inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
+            inline void addRaisedException(const std::exception_ptr& excpPtr)      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 
             /**
              * @brief Default constructor for LoggingOps class

@@ -44,7 +44,8 @@ done
 # Sink failure: the file opens but every write fails (file-size limit 0, SIGXFSZ ignored).
 # The fatal record cannot reach disk, so it must be reported on stderr before abort().
 # The record carries an ESC byte: it must reach stderr escaped, never as a raw terminal escape
-printf '#include "LOGGER_MACROS.hpp"\nusing namespace logger;\nint main() { LOG_FATAL("fatal_sinkfail-record \\x1b[31mred"); return 0; }\n' > "$TMP/SINKFAIL.cpp"
+# The host makes stderr fully buffered: the fallback must flush it, or abort() discards it.
+printf '#include "LOGGER_MACROS.hpp"\n#include <cstdio>\nusing namespace logger;\nstatic char buf[1 << 16];\nint main() { std::setvbuf(stderr, buf, _IOFBF, sizeof(buf)); LOG_FATAL("fatal_sinkfail-record \\x1b[31mred"); return 0; }\n' > "$TMP/SINKFAIL.cpp"
 if $CXX -std=c++20 -Iinclude "${EXTRA[@]}" -DFILE_LOGGING "-DLOG_FILE_NAME=\"$TMP/SINKFAIL.log\"" src/*.cpp "$TMP/SINKFAIL.cpp" -o "$TMP/SINKFAIL"; then
   # stderr goes through a pipe to a reader outside the limit (a capture file would hit the limit too)
   (cd "$TMP" && trap '' XFSZ && ulimit -f 0 && perl -e 'alarm 30; exec @ARGV' ./SINKFAIL 2>&1 >/dev/null) | cat > "$TMP/SINKFAIL.err"; rc=${PIPESTATUS[0]}
