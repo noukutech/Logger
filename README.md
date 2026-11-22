@@ -69,7 +69,7 @@ This Logger library offers simple logging capabilities, including multiple log l
 
 ### Prerequisits
 
-- C++ compiler supporting `C++-20` (e.g., GCC 10+, Clang 10+)
+- A C++20 compiler and standard library with `<format>` support: GCC 13+ (libstdc++ 13+), or Clang with a `<format>`-capable library (libc++ 17+, or libstdc++ 13+). Tested: Apple clang 21 (libc++), GCC 14 and Clang 18 on Ubuntu 24.04 (libstdc++ 14), and MSYS2 UCRT64 GCC/Clang on Windows
 - make for building the library (make based; `clang++` by default, override with e.g. `make CXX=g++-14`)
 - On macOS, Homebrew include/lib paths are picked up automatically (`brew --prefix`), so Homebrew's `googletest` works on Apple Silicon without extra flags
 - On Windows, build inside an MSYS2 UCRT64 shell with `make`, `mingw-w64-ucrt-x86_64-gcc` (or `-clang`) and `mingw-w64-ucrt-x86_64-gtest` installed
@@ -129,7 +129,7 @@ Where `buildNinstall.sh` is a script that will build the library and install it 
 - `-BUILD_TYPE`: Set the build type (release or debug). Default is release.
 - `-LIB_TYPE`: Set the library type (static or shared). Default is static.
 - `-FILE_LOGGING`: Enable file logging. Default is no.
-- `-LOG_FILE_NAME`: Set the log file name. Default is Logger.log.
+- `-LOG_FILE_NAME`: Set the log file name. There is no default: without it the logger uses console output, even with `-FILE_LOGGING=yes`.
 - `-BUILD_TEST`: Enable building tests. Default is no.
 
 > **Note**: The default installation locations are:

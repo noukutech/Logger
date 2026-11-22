@@ -112,6 +112,13 @@ namespace logger
              * @note This function is thread safe. It uses mutex to ensure that
              * only one thread can add an exception at a time.
              */
+            /**
+             * @brief Whether any write/operation failure has been recorded so far.
+             * Thread safe, unlike getAllExceptions(); used by the fatal/assert paths to
+             * detect that a record may not have reached its destination.
+             */
+            inline bool hasRaisedExceptions() noexcept                                      { std::scoped_lock<std::mutex> lock(m_excpMtx); return !m_excpPtrVec.empty(); }
+
             inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 
             /**

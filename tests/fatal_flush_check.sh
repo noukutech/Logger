@@ -41,4 +41,18 @@ for kind in FATAL FATAL_BADFMT FATAL_JSONFMT ASSERT ASSERT_MSG ASSERT_ABORT ATEX
     echo "$kind: FAIL (exit=$rc, expected $expect; or record missing from $kind.log)"; fail=1
   fi
 done
+# Sink failure: the file opens but every write fails (file-size limit 0, SIGXFSZ ignored).
+# The fatal record cannot reach disk, so it must be reported on stderr before abort().
+printf '#include "LOGGER_MACROS.hpp"\nusing namespace logger;\nint main() { LOG_FATAL("fatal_sinkfail-record"); return 0; }\n' > "$TMP/SINKFAIL.cpp"
+if $CXX -std=c++20 -Iinclude "${EXTRA[@]}" -DFILE_LOGGING "-DLOG_FILE_NAME=\"$TMP/SINKFAIL.log\"" src/*.cpp "$TMP/SINKFAIL.cpp" -o "$TMP/SINKFAIL"; then
+  # stderr goes through a pipe to a reader outside the limit (a capture file would hit the limit too)
+  (cd "$TMP" && trap '' XFSZ && ulimit -f 0 && perl -e 'alarm 30; exec @ARGV' ./SINKFAIL 2>&1 >/dev/null) | cat > "$TMP/SINKFAIL.err"; rc=${PIPESTATUS[0]}
+  if [ "$rc" -eq 134 ] && grep -q 'fatal_sinkfail-record.*write failure' "$TMP/SINKFAIL.err"; then
+    echo "FATAL_SINKFAIL: ok (exit=$rc, record reported on stderr)"
+  else
+    echo "FATAL_SINKFAIL: FAIL (exit=$rc, expected 134 and the record on stderr)"; fail=1
+  fi
+else
+  echo "FATAL_SINKFAIL: build failed"; fail=1
+fi
 exit $fail

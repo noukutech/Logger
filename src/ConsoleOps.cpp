@@ -40,7 +40,6 @@ ConsoleOps::ConsoleOps()
     : LoggingOps()
     , m_testing(false)
     , m_testStringStream()
-    , m_isOpsRunning(false)
 {
     //Spawn a thread to keep watch and pull the data from the data records queue
     //and write it to the file whenever it is available
@@ -70,9 +69,8 @@ void ConsoleOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&
     try
     {
         std::string errMsg;
+        // The RAII lock is the only guard: a throwing stream cannot leave anything set behind it
         std::unique_lock<std::mutex> consoleLock(m_mtx);
-        m_cv.wait(consoleLock, [this]{ return !m_isOpsRunning; });
-        m_isOpsRunning = true;
 
         std::ostream& outStream = std::cout;
         if (outStream.good())
@@ -109,9 +107,7 @@ void ConsoleOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&
             osstr << "]: to console for data";
             errMsg = osstr.str();
         }
-        m_isOpsRunning = false;
         consoleLock.unlock();
-        m_cv.notify_all();
 
         if (!errMsg.empty())
             throw std::runtime_error(errMsg);

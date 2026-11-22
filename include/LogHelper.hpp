@@ -37,6 +37,8 @@
 
 #include "Logger.hpp"
 
+#include <cstdio>
+
 namespace logger
 {
     template <typename T>
@@ -496,6 +498,19 @@ namespace logger
      * @param [in] format_str The format string for the log message.
      * @param [in] args Additional arguments to be formatted into the log message.
      */
+    /**
+     * @brief Last-resort report for fatal/assert records.
+     *
+     * flush() returns once the watcher has *attempted* to write every queued record. If the sink
+     * recorded a failure (e.g. disk full), the record may not be on disk, and abort() skips the
+     * destructor that would print the stored error. Write the record to stderr so it is not lost.
+     */
+    inline void reportIfSinkFailed(const std::string& record) noexcept
+    {
+        if (loggingOps.hasRaisedExceptions())
+            std::fprintf(stderr, "%s [logger: sink reported a write failure; record may not be persisted]\n", record.c_str());
+    }
+
     template<typename ...Args>
     void log_assert
     (
@@ -514,6 +529,7 @@ namespace logger
         // Termination must happen even if logging itself fails
         try
         {
+            std::string record;
             {
                 // Condition and record under one lock, so a concurrent log call cannot clear it or take it
                 std::lock_guard<std::mutex> raceLock(raceMtx);
@@ -526,9 +542,11 @@ namespace logger
                              LOG_TYPE::LOG_ASSERT,
                              format_str,
                              args...);
+                record = loggerObj.getLogStream().str();
             }
             // Lock released first: atexit handlers may log, and abort/exit skip destructors so flush now
             loggingOps.flush();
+            reportIfSinkFailed(record);
         }
         catch (...) {}
         if (exitGracefuly)
@@ -568,15 +586,21 @@ namespace logger
         // Termination must happen even if logging itself fails (e.g. bad_alloc)
         try
         {
-            logMsg( fileName,
-                    funcName,
-                    FORWARD_ANGLE,
-                    lineNo,
-                    std::this_thread::get_id(),
-                    LOG_TYPE::LOG_FATAL,
-                    format_str,
-                    args...);
+            std::string record;
+            {
+                std::lock_guard<std::mutex> raceLock(raceMtx);
+                logMsgLocked(fileName,
+                             funcName,
+                             FORWARD_ANGLE,
+                             lineNo,
+                             std::this_thread::get_id(),
+                             LOG_TYPE::LOG_FATAL,
+                             format_str,
+                             args...);
+                record = loggerObj.getLogStream().str();
+            }
             loggingOps.flush();   // abort skips destructors; without this a file sink loses the fatal record
+            reportIfSinkFailed(record);
         }
         catch (...) {}
         std::abort();

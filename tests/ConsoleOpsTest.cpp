@@ -39,6 +39,11 @@
 #include "CommonFunc.hpp"
 
 #include <bitset>
+#include <atomic>
+#include <chrono>
+#include <iostream>
+#include <streambuf>
+#include <thread>
 
 using namespace logger;
 
@@ -374,3 +379,63 @@ TEST_F(ConsoleOpsTest, testWriteConsoleWith_8_Bytes_Hex_DataStream)
     testHexDataStream<uint64_t>(64);
 }
 
+
+namespace
+{
+    // streambuf whose first write fails; with cout.exceptions(badbit) that throws ios_base::failure
+    class FailOnceBuf : public std::streambuf
+    {
+        public:
+            explicit FailOnceBuf(std::streambuf* real) : m_real(real) {}
+        protected:
+            int_type overflow(int_type ch) override
+            {
+                if (!m_failed) { m_failed = true; return traits_type::eof(); }
+                return m_real->sputc(traits_type::to_char_type(ch));
+            }
+            std::streamsize xsputn(const char* s, std::streamsize n) override
+            {
+                if (!m_failed) { m_failed = true; return 0; }
+                return m_real->sputn(s, n);
+            }
+            int sync() override { return m_real->pubsync(); }
+        private:
+            std::streambuf* m_real;
+            bool m_failed = false;
+    };
+}
+
+// Regression: a throwing console stream left the ConsoleOps busy flag set, so the next batch
+// (and every later flush(), including LOG_FATAL's) waited forever.
+TEST(ConsoleOpsFailureTest, throwingStreamDoesNotWedgeLaterWrites)
+{
+    auto* original = std::cout.rdbuf();
+    const auto originalExceptions = std::cout.exceptions();
+    FailOnceBuf failing(original);
+    std::cout.rdbuf(&failing);
+    std::cout.exceptions(std::ios::badbit);
+
+    std::atomic<bool> finished{false};
+    std::thread worker([&]()
+    {
+        ConsoleOps console;
+        console.write(std::string_view("first-write-throws"));
+        console.flush();
+        std::cout.clear();   // the failed write left badbit set
+        console.write(std::string_view("second-write-ok"));
+        console.flush();   // used to block forever here
+        finished = true;
+    });
+    for (int i = 0; i < 5000 && !finished; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool done = finished;
+    if (done)
+        worker.join();
+    else
+        worker.detach();   // wedged: do not block the test binary forever
+
+    std::cout.exceptions(originalExceptions);
+    std::cout.clear();
+    std::cout.rdbuf(original);
+    EXPECT_TRUE(done) << "ConsoleOps hung after a throwing stream write";
+}
