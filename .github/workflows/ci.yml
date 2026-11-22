@@ -53,6 +53,9 @@ jobs:
         run: |
           # Linux kernels with high mmap ASLR entropy break TSan's shadow memory mapping
           if [ "${{ runner.os }}" = Linux ]; then sudo sysctl vm.mmap_rnd_bits=28; fi
+          # Homebrew's gtest is not ASan-instrumented, so libc++ container annotations report
+          # false container-overflows inside gtest itself (seen in GTestIsInitialized)
+          if [ "${{ runner.os }}" = macOS ]; then export ASAN_OPTIONS="$ASAN_OPTIONS:detect_container_overflow=0"; fi
           ./bin/TestLogger   --gtest_shuffle --gtest_repeat=10
           ./bin/TestLogger_d --gtest_shuffle --gtest_repeat=10
 

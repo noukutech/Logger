@@ -213,7 +213,7 @@ class ConsoleOpsTest : public CommonTestDataGenerator
                         consoleDataBin = static_cast<DataType>(std::bitset<32>(line).to_ulong());
                         break;
                     case 64:
-                        consoleDataBin = static_cast<DataType>(std::bitset<64>(line).to_ulong());
+                        consoleDataBin = static_cast<DataType>(std::bitset<64>(line).to_ullong());
                         break;
                     default:
                         ASSERT_TRUE(false);

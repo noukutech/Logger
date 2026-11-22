@@ -186,9 +186,7 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
 {
     //First of all let us wait for any ongoing file operations (if any) to finish
     std::unique_lock<std::mutex> lock(m_FileOpsMutex);
-    m_FileOpsCv.wait(lock, [this] { return !m_isFileOpsRunning; });
 
-    m_isFileOpsRunning = true;  // Make the flag true to indicate that file operations are in progress
 
     if (!std::get<0>(fileDetails).empty())
         m_FileName = std::get<0>(fileDetails);
@@ -230,8 +228,11 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
 
         if (m_FilePath.empty())
         {
-            // Last separator of either kind, so mixed Windows paths ("C:\\a/b\\c.log") split correctly
-            auto pathSeparator = m_FileName.find_last_of("/\\");
+#if defined(_WIN32)
+            auto pathSeparator = m_FileName.find_last_of("/\\");   // Windows accepts both separators
+#else
+            auto pathSeparator = m_FileName.find_last_of('/');      // '\\' is a valid file-name character on POSIX
+#endif
 
             if (pathSeparator != std::string::npos)
             {
@@ -257,8 +258,6 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
     }
     //All done, now we can set the flag to false
     //and notify any waiting threads
-    m_isFileOpsRunning = false;
-    m_FileOpsCv.notify_one();
 }
 
 FileOps::FileOps(const std::uintmax_t maxFileSize,
@@ -271,7 +270,6 @@ FileOps::FileOps(const std::uintmax_t maxFileSize,
     , m_FileExtension(fileExtension)
     , m_FileContent(DataQ())
     , m_MaxFileSize(maxFileSize)
-    , m_isFileOpsRunning(false)
 {
     auto fileDetails = std::make_tuple(m_FileName, m_FilePath, m_FileExtension);
     // Initialize the file path object
@@ -321,10 +319,8 @@ std::uintmax_t FileOps::getFileSize()
     {
         flush();
         std::scoped_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_isFileOpsRunning = true;
         std::error_code ec;
         fileSize = std::filesystem::file_size(m_FilePathObj, ec);
-        m_isFileOpsRunning = false;
         if (ec)
         {
             std::ostringstream os;
@@ -342,7 +338,6 @@ bool FileOps::createFile()
     auto retVal = false;
     {
         std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_FileOpsCv.wait(fileLock, [this] { return !m_isFileOpsRunning; });
         // Check and create under the lock; append mode never truncates a file another thread just created
         if (!fileExists())
         {
@@ -354,7 +349,6 @@ bool FileOps::createFile()
             }
         }
     }
-    m_FileOpsCv.notify_all();
     return retVal;
 }
 
@@ -364,13 +358,9 @@ bool FileOps::deleteFile()
     if (fileExists())
     {
         std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_FileOpsCv.wait(fileLock, [this] { return !m_isFileOpsRunning; });
-        m_isFileOpsRunning = true;
-        std::error_code ec;   // non-throwing overload keeps m_isFileOpsRunning from getting stuck
+        std::error_code ec;   // non-throwing overload: failure is reported via the return value
         retVal = std::filesystem::remove(m_FilePathObj, ec);
-        m_isFileOpsRunning = false;
         fileLock.unlock();
-        m_FileOpsCv.notify_one();
     }
     return retVal;
 }
@@ -385,16 +375,12 @@ bool FileOps::renameFile(const std::string_view newFileName)
     if (fileExists() && newFileName != m_FileName)
     {
         std::unique_lock<std::mutex> lock(m_FileOpsMutex);
-        m_FileOpsCv.wait(lock, [this] { return !m_isFileOpsRunning; });
-        m_isFileOpsRunning = true;
 
         std::filesystem::path newPath = m_FilePathObj.parent_path() / newFileName;
-        // error_code overload: a throw here used to leave m_isFileOpsRunning stuck true and hang all writers
+        // error_code overload: failure is reported via the return value instead of throwing
         std::error_code ec;
         std::filesystem::rename(m_FilePathObj, newPath, ec);
-        m_isFileOpsRunning = false;
         lock.unlock();
-        m_FileOpsCv.notify_all();
         success = !ec;
     }
     return success;
@@ -412,8 +398,6 @@ void FileOps::readFile()
     DataQ().swap(m_FileContent); // Clear the file content queue
 
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-    m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-    m_isFileOpsRunning = true;
 
     if (std::filesystem::exists(m_FilePathObj))
     {
@@ -429,23 +413,17 @@ void FileOps::readFile()
         }
         else
         {
-            m_isFileOpsRunning = false;
             fileLock.unlock();
-            m_FileOpsCv.notify_all();
             throw std::runtime_error("Failed to open file: " + m_FilePathObj.string());
         }
     }
-    m_isFileOpsRunning = false;
     fileLock.unlock();
-    m_FileOpsCv.notify_all();
 }
 
 bool FileOps::clearFile()
 {
     auto retVal = false;
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-    m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-    m_isFileOpsRunning = true;
 
     if (fileExists())
     {
@@ -456,9 +434,7 @@ bool FileOps::clearFile()
             retVal = true;
         }
     }
-    m_isFileOpsRunning = false;
     fileLock.unlock();
-    m_FileOpsCv.notify_all();
     return retVal;
 }
 
@@ -469,6 +445,9 @@ void FileOps::writeDataTo(const std::string_view data)
         if (data.empty())
             return;
 
+        // Existence check, size check, rotation and enqueue are one step per sink; otherwise
+        // writers racing on a missing/just-rotated file enqueue without the size check
+        std::scoped_lock<std::mutex> rotateLock(m_rotateMtx);
         if (!fileExists())
         {
             // Another writer may have created it first; that is fine
@@ -489,8 +468,6 @@ void FileOps::writeDataTo(const std::string_view data)
              * for further logging/writting. Throw
              * exception for any runtime error case.
              */
-            // Size check, rename and re-create must be one step, or two writers can rotate onto the same archive name
-            std::scoped_lock<std::mutex> rotateLock(m_rotateMtx);
             flush(); //Flush the data whatever in the queue waiting to be written
             // Now get the file size
             auto currFileSize = getFileSize();
@@ -534,8 +511,6 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
     {
         std::string errMsg;
         std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-        m_isFileOpsRunning = true;
 
         std::ofstream file(m_FilePathObj, std::ios::out | std::ios::app | std::ios::binary);
         std::array<char, bufferSize> data{};
@@ -568,9 +543,7 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
             osstr << "] can not be opened to write log data: " << data.data() << "\n";
             errMsg = osstr.str();
         }
-        m_isFileOpsRunning = false;
         fileLock.unlock();
-        m_FileOpsCv.notify_all();
 
         if (!errMsg.empty())
             throw std::runtime_error(errMsg);
@@ -585,23 +558,16 @@ bool FileOps::isEmpty()
 {
     flush();
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-    m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-    m_isFileOpsRunning = true;
     std::ifstream file(m_FilePathObj.string(), std::ios::ate | std::ios::binary);
     if (!file)
     {
-        // Clear the busy flag on this exit too, or every later file operation waits forever
-        m_isFileOpsRunning = false;
         fileLock.unlock();
-        m_FileOpsCv.notify_all();
         return false;
     }
 
     auto retVal = file.tellg();
     file.close();
-    m_isFileOpsRunning = false;
     fileLock.unlock();
-    m_FileOpsCv.notify_one();
     return retVal == 0;
 }
 

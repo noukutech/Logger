@@ -446,9 +446,7 @@ namespace logger
             DataQ m_FileContent;
             std::filesystem::path m_FilePathObj;
             std::uintmax_t m_MaxFileSize;
-            std::mutex m_FileOpsMutex;
-            std::condition_variable m_FileOpsCv;
-            std::atomic_bool m_isFileOpsRunning;
+            std::mutex m_FileOpsMutex;   // sole guard for file I/O; RAII locks release it on every exit, including throws
             std::mutex m_rotateMtx;   // serializes the size-check/rename/re-create rotation step
     };
 };  //logger namespace

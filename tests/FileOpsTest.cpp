@@ -92,7 +92,7 @@ class FileOpsTests : public CommonTestDataGenerator
                         fileDataBin = static_cast<DataType>(std::bitset<32>(fileData).to_ulong());
                         break;
                     case 64:
-                        fileDataBin = static_cast<DataType>(std::bitset<64>(fileData).to_ulong());
+                        fileDataBin = static_cast<DataType>(std::bitset<64>(fileData).to_ullong());
                         break;
                     default:
                         ASSERT_TRUE(false);
@@ -753,40 +753,28 @@ TEST_F(FileOpsTests, testGetFileSize)
 
 TEST_F(FileOpsTests, testFileLimitExceed)
 {
+    // Test-owned directory: never scan or delete unrelated files in the working directory
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_limit_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
     std::uintmax_t maxFileSize = 1024;
     std::uintmax_t maxTextSize = 3072;
-    auto fileName = generateRandomFileName();
-    auto expFilePath = std::filesystem::current_path().string() + getPathSeperator();
-    FileOps file(maxFileSize, fileName);
-    std::vector<std::string> dataQueue;
-    for (auto cnt = 0; cnt < 400; ++cnt)
     {
-        auto text = generateRandomText(maxTextSize);
-        file.append(text);
-        dataQueue.push_back(text);
-    }
+        FileOps file(maxFileSize, generateRandomFileName(), dir.string());
+        for (auto cnt = 0; cnt < 400; ++cnt)
+            file.append(generateRandomText(maxTextSize));
+        file.flush();
+        EXPECT_TRUE(file.getAllExceptions().empty());
+    }   // sink destroyed: every record is on disk before we inspect
     size_t cnt = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
     {
-        if (entry.path().extension() == ".txt" && entry.is_regular_file())
+        if (entry.is_regular_file())
             ++cnt;
     }
-    EXPECT_GT(cnt, static_cast<size_t>(1));
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
-    {
-        if (entry.path().extension() == ".txt" && entry.is_regular_file())
-        {
-            ASSERT_TRUE(FileOps::removeFile(entry.path()));
-        }
-    }
-    size_t newCnt = 0;
-    cnt = newCnt;
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
-    {
-        if (entry.path().extension() == ".txt" && entry.is_regular_file())
-            ++newCnt;
-    }
-    EXPECT_EQ(cnt, newCnt);
+    EXPECT_GT(cnt, static_cast<size_t>(1));   // rotation produced archives
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    EXPECT_FALSE(ec) << ec.message();
 }
 
 // Regression: records longer than one 4 KB buffer were split with one byte dropped per chunk.
@@ -927,4 +915,48 @@ TEST_F(FileOpsTests, testDestructorDrainsPendingRecords)
     in.close();
     EXPECT_EQ(records, lines);
     ASSERT_TRUE(FileOps::removeFile(path));
+}
+
+// Regression: writers racing on a missing/just-rotated file enqueued without the size check, and two
+// rotations could pick the same archive name. Every record must land exactly once, no file over the limit.
+TEST_F(FileOpsTests, testConcurrentRotationKeepsEveryRecordOnce)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_rot_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    constexpr std::uintmax_t maxFileSize = 256;
+    constexpr int threads = 4;
+    constexpr int perThread = 100;
+    {
+        FileOps file(maxFileSize, "rot.log", dir.string());
+        std::vector<std::thread> writers;
+        for (int t = 0; t < threads; ++t)
+        {
+            writers.emplace_back([&file, t]()
+            {
+                for (int i = 0; i < perThread; ++i)
+                    file.write("T" + std::to_string(t) + "_" + std::to_string(1000 + i));   // fixed-width ids
+            });
+        }
+        for (auto& w : writers)
+            w.join();
+        file.flush();
+        EXPECT_TRUE(file.getAllExceptions().empty());
+    }
+    std::multiset<std::string> ids;
+    size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        ++files;
+        EXPECT_LE(std::filesystem::file_size(entry.path()), maxFileSize) << entry.path();
+        std::ifstream in(entry.path());
+        for (std::string line; std::getline(in, line);)
+            ids.insert(line);
+    }
+    EXPECT_GT(files, 2u);
+    ASSERT_EQ(static_cast<size_t>(threads * perThread), ids.size());
+    for (int t = 0; t < threads; ++t)
+        for (int i = 0; i < perThread; ++i)
+            EXPECT_EQ(1u, ids.count("T" + std::to_string(t) + "_" + std::to_string(1000 + i)));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }

@@ -96,7 +96,13 @@ using namespace logger;
 #endif // LOG_FILE_PATH
         try
         {
-            pLoggingOps.reset(new FileOps(fileSize, fileName, filePath, fileExtn));
+            auto pFileOps = std::make_unique<FileOps>(fileSize, fileName, filePath, fileExtn);
+            // FileOps does not open the file up front, so check the resolved destination here:
+            // a LOG_FILE_NAME like "/missing-dir/app.log" must not bind the logger to a dead sink
+            std::error_code dirEc;
+            if (!std::filesystem::is_directory(pFileOps->getFilePathObj().parent_path(), dirEc))
+                break;
+            pLoggingOps = std::move(pFileOps);
         }
         catch (...)
         {

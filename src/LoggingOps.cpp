@@ -113,8 +113,8 @@ void LoggingOps::push(const std::string_view data)
     {
         std::array<char, bufferSize> dataRecord{};
         std::scoped_lock<std::mutex> lock(m_DataRecordsMtx);
-        // Admission closes once the watcher has drained and exited; nothing would ever write the record
-        if (m_watcherDone)
+        // Admission closes as soon as shutdown starts, so steady producers cannot keep the watcher from exiting
+        if (m_shutAndExit)
         {
             addRaisedException(std::make_exception_ptr(std::runtime_error("Log record dropped: logging after shutdown")));
             return;
@@ -176,7 +176,7 @@ void LoggingOps::keepWatchAndPull()
         dataLock.lock();
         if (success)
             m_writtenSeq += batchSize;
-        // On shutdown keep draining until no accepted record is left, then close admission
+        // Admission is already closed; exit once every accepted record is written
         const bool done = shutdown && m_DataRecords.empty();
         if (done)
             m_watcherDone = true;

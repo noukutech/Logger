@@ -84,34 +84,39 @@ TEST_F(ClockTests, testGetLocalTimeStr)
     };     
     
     {
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expLocalTimeStr = clock.getLocalTimeStr();
         auto localTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         std::string format = "%d/%m/%Y %H:%M:%S";
-        EXPECT_STREQ(expLocalTimeStr.c_str(), formattedLocalTime(format, &localTime).c_str());
+        EXPECT_TRUE(expLocalTimeStr == formattedLocalTime(format, &before) || expLocalTimeStr == formattedLocalTime(format, &localTime)) << expLocalTimeStr;
     }
     {
         std::string format = "%Y/%m/%d %H:%M:%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expLocalTimeStr = clock.getLocalTimeStr(format);
         auto localTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expLocalTimeStr.c_str(), formattedLocalTime(format, &localTime).c_str());
+        EXPECT_TRUE(expLocalTimeStr == formattedLocalTime(format, &before) || expLocalTimeStr == formattedLocalTime(format, &localTime)) << expLocalTimeStr;
     }
     {
         std::string format = "%Y-%m-%d %H:%M:%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expLocalTimeStr = clock.getLocalTimeStr(format);
         auto localTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expLocalTimeStr.c_str(), formattedLocalTime(format, &localTime).c_str());
+        EXPECT_TRUE(expLocalTimeStr == formattedLocalTime(format, &before) || expLocalTimeStr == formattedLocalTime(format, &localTime)) << expLocalTimeStr;
     }
     {
         std::string format = "%Y%m%d_%H:%M:%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expLocalTimeStr = clock.getLocalTimeStr(format);
         auto localTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expLocalTimeStr.c_str(), formattedLocalTime(format, &localTime).c_str());
+        EXPECT_TRUE(expLocalTimeStr == formattedLocalTime(format, &before) || expLocalTimeStr == formattedLocalTime(format, &localTime)) << expLocalTimeStr;
     }
     {
         std::string format = "%Y%m%d_%H%M%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expLocalTimeStr = clock.getLocalTimeStr(format);
         auto localTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expLocalTimeStr.c_str(), formattedLocalTime(format, &localTime).c_str());
+        EXPECT_TRUE(expLocalTimeStr == formattedLocalTime(format, &before) || expLocalTimeStr == formattedLocalTime(format, &localTime)) << expLocalTimeStr;
     }
 }
 
@@ -125,85 +130,97 @@ TEST_F(ClockTests, testGetGmtTimeStr)
     };     
     
     {
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expGmtTimeStr = clock.getGmtTimeStr();
         auto gmtTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         std::string format = "%d/%m/%Y %H:%M:%S";
-        EXPECT_STREQ(expGmtTimeStr.c_str(), formattedGmtTime(format, &gmtTime).c_str());
+        EXPECT_TRUE(expGmtTimeStr == formattedGmtTime(format, &before) || expGmtTimeStr == formattedGmtTime(format, &gmtTime)) << expGmtTimeStr;
     }
     {
         std::string format = "%Y/%m/%d %H:%M:%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expGmtTimeStr = clock.getGmtTimeStr(format);
         auto gmtTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expGmtTimeStr.c_str(), formattedGmtTime(format, &gmtTime).c_str());
+        EXPECT_TRUE(expGmtTimeStr == formattedGmtTime(format, &before) || expGmtTimeStr == formattedGmtTime(format, &gmtTime)) << expGmtTimeStr;
     }
     {
         std::string format = "%Y-%m-%d %H:%M:%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expGmtTimeStr = clock.getGmtTimeStr(format);
         auto gmtTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expGmtTimeStr.c_str(), formattedGmtTime(format, &gmtTime).c_str());
+        EXPECT_TRUE(expGmtTimeStr == formattedGmtTime(format, &before) || expGmtTimeStr == formattedGmtTime(format, &gmtTime)) << expGmtTimeStr;
     }
     {
         std::string format = "%Y%m%d_%H:%M:%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expGmtTimeStr = clock.getGmtTimeStr(format);
         auto gmtTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expGmtTimeStr.c_str(), formattedGmtTime(format, &gmtTime).c_str());
+        EXPECT_TRUE(expGmtTimeStr == formattedGmtTime(format, &before) || expGmtTimeStr == formattedGmtTime(format, &gmtTime)) << expGmtTimeStr;
     }
     {
         std::string format = "%Y%m%d_%H%M%S";
+        const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());   // bracket the call: a second boundary must not fail the test
         auto expGmtTimeStr = clock.getGmtTimeStr(format);
         auto gmtTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        EXPECT_STREQ(expGmtTimeStr.c_str(), formattedGmtTime(format, &gmtTime).c_str());
+        EXPECT_TRUE(expGmtTimeStr == formattedGmtTime(format, &before) || expGmtTimeStr == formattedGmtTime(format, &gmtTime)) << expGmtTimeStr;
     }
 }
 
 TEST_F(ClockTests, testGetDayOfWeek)
 {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto expDayOfWeek = clock.getDayOfWeek();
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto localTime = std::localtime(&now);
     std::ostringstream oss;
     oss << std::put_time(localTime, "%A");
-    EXPECT_STREQ(expDayOfWeek.c_str(), oss.str().c_str());
+    std::ostringstream ossBefore;
+    ossBefore << std::put_time(std::localtime(&before), "%A");
+    EXPECT_TRUE(expDayOfWeek == oss.str() || expDayOfWeek == ossBefore.str()) << expDayOfWeek;
 }
 
 TEST_F(ClockTests, testGetMonth)
 {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto expMonth = clock.getMonth();
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto localTime = std::localtime(&now);
     std::ostringstream oss;
     oss << std::put_time(localTime, "%B");
-    EXPECT_STREQ(expMonth.c_str(), oss.str().c_str());
+    std::ostringstream ossBefore;
+    ossBefore << std::put_time(std::localtime(&before), "%B");
+    EXPECT_TRUE(expMonth == oss.str() || expMonth == ossBefore.str()) << expMonth;
 }
 
 TEST_F(ClockTests, testGetYear)
 {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto expYear = clock.getYear();
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto localTime = std::localtime(&now);
     std::ostringstream oss;
     oss << std::put_time(localTime, "%Y");
-    EXPECT_STREQ(expYear.c_str(), oss.str().c_str());
+    std::ostringstream ossBefore;
+    ossBefore << std::put_time(std::localtime(&before), "%Y");
+    EXPECT_TRUE(expYear == oss.str() || expYear == ossBefore.str()) << expYear;
 }
 
 TEST_F(ClockTests, testGetTimeOfTheDay)
 {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto [hours, minutes, seconds] = clock.getTimeOfTheDay();
-    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto localTime = std::localtime(&now);
-    EXPECT_EQ(hours, localTime->tm_hour);
-    EXPECT_EQ(minutes, localTime->tm_min);
-    EXPECT_EQ(seconds, localTime->tm_sec);
+    const auto after = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    auto matches = [&](std::time_t t) { const std::tm tmVal = *std::localtime(&t); return hours == tmVal.tm_hour && minutes == tmVal.tm_min && seconds == tmVal.tm_sec; };
+    EXPECT_TRUE(matches(before) || matches(after)) << hours << ":" << minutes << ":" << seconds;
 }
 
 TEST_F(ClockTests, testGetGmtTimeOfTheDay)
 {
+    const auto before = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     auto [hours, minutes, seconds] = clock.getGmtTimeOfTheDay();
-    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    auto gmtTime = std::gmtime(&now);
-    EXPECT_EQ(hours, gmtTime->tm_hour);
-    EXPECT_EQ(minutes, gmtTime->tm_min);
-    EXPECT_EQ(seconds, gmtTime->tm_sec);
+    const auto after = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    auto matches = [&](std::time_t t) { const std::tm tmVal = *std::gmtime(&t); return hours == tmVal.tm_hour && minutes == tmVal.tm_min && seconds == tmVal.tm_sec; };
+    EXPECT_TRUE(matches(before) || matches(after)) << hours << ":" << minutes << ":" << seconds;
 }
 
 TEST_F(ClockTests, testStart)

@@ -49,7 +49,7 @@
 
 namespace logger
 {
-    using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
+    using TimePoint = std::chrono::time_point<std::chrono::steady_clock>;   // monotonic: high_resolution_clock is system_clock on libstdc++/MinGW
 
     /**
      * @enum TimeUnits

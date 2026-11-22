@@ -78,7 +78,7 @@ void Clock::start()
         return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_startTime = std::chrono::high_resolution_clock::now();
+    m_startTime = std::chrono::steady_clock::now();
     m_isRunning = true;
     m_threadId = std::this_thread::get_id();
 }
@@ -89,7 +89,7 @@ void Clock::stop()
         return;
     
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_endTime = std::chrono::high_resolution_clock::now();
+    m_endTime = std::chrono::steady_clock::now();
     m_isRunning = false;
     m_condition.notify_one();
 }
@@ -99,16 +99,17 @@ double Clock::getElapsedTime(const TimeUnits& units)
     if (m_isRunning || (m_threadId != std::this_thread::get_id()))
         return -1.0;
 
+    // Fractional result: duration_cast truncated e.g. 0.999 s to 0
     switch (units)
     {
         case TimeUnits::SECONDS:
-        return std::chrono::duration_cast<std::chrono::seconds>(m_endTime - m_startTime).count();
+        return std::chrono::duration<double, std::ratio<1>>(m_endTime - m_startTime).count();
         case TimeUnits::MILLISECONDS:
-            return std::chrono::duration_cast<std::chrono::milliseconds>(m_endTime - m_startTime).count();
+            return std::chrono::duration<double, std::milli>(m_endTime - m_startTime).count();
         case TimeUnits::MICROSECONDS:
-            return std::chrono::duration_cast<std::chrono::microseconds>(m_endTime - m_startTime).count();
+            return std::chrono::duration<double, std::micro>(m_endTime - m_startTime).count();
         case TimeUnits::NANOSECONDS:
-            return std::chrono::duration_cast<std::chrono::nanoseconds>(m_endTime - m_startTime).count();
+            return std::chrono::duration<double, std::nano>(m_endTime - m_startTime).count();
         default:
             return -1.0;
     }
