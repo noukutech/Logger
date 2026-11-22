@@ -3,7 +3,7 @@
  * 
  * MIT License
  * 
- * Copyright (c) 2024 Swarnendu RC
+ * Copyright (c) 2024 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,7 +40,6 @@ ConsoleOps::ConsoleOps()
     : LoggingOps()
     , m_testing(false)
     , m_testStringStream()
-    , m_isOpsRunning(false)
 {
     //Spawn a thread to keep watch and pull the data from the data records queue
     //and write it to the file whenever it is available
@@ -50,6 +49,7 @@ ConsoleOps::ConsoleOps()
 
 ConsoleOps::~ConsoleOps()
 {
+    stopWatcher();
 }
 
 void ConsoleOps::writeDataTo(const std::string_view data)
@@ -69,9 +69,8 @@ void ConsoleOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&
     try
     {
         std::string errMsg;
+        // The RAII lock is the only guard: a throwing stream cannot leave anything set behind it
         std::unique_lock<std::mutex> consoleLock(m_mtx);
-        m_cv.wait(consoleLock, [this]{ return !m_isOpsRunning; });
-        m_isOpsRunning = true;
 
         std::ostream& outStream = std::cout;
         if (outStream.good())
@@ -97,6 +96,13 @@ void ConsoleOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&
                 {
                     outStream << data.data() << std::endl;
                     outStream.flush();
+                    // With the default exception mask a failed write only sets badbit; report it
+                    if (!outStream.good() && errMsg.empty())
+                    {
+                        std::ostringstream osstr;
+                        osstr << "WRITING_ERROR : [" << std::this_thread::get_id() << "]: to console failed";
+                        errMsg = osstr.str();
+                    }
                 }
             }
         }
@@ -108,9 +114,7 @@ void ConsoleOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&
             osstr << "]: to console for data";
             errMsg = osstr.str();
         }
-        m_isOpsRunning = false;
         consoleLock.unlock();
-        m_cv.notify_all();
 
         if (!errMsg.empty())
             throw std::runtime_error(errMsg);

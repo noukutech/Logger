@@ -77,12 +77,15 @@ class LoggerTest : public CommonTestDataGenerator
             EXPECT_TRUE(logStream.str().find(marker) != std::string::npos);
 
             if (!logMsg.empty())
+            {
                 EXPECT_TRUE(logStream.str().find(logMsg) != std::string::npos);
+            }
         }
         static int* funcReturningPointer(const int val1, const int val2) noexcept
         {
             LOG_ENTRY();
-            static std::unique_ptr<int> pRetVal = std::make_unique<int>(val1 * val2);
+            static std::unique_ptr<int> pRetVal = std::make_unique<int>(0);
+            *pRetVal = val1 * val2;    // static init runs once; assign every call so results don't leak across tests
             LOG_EXIT();
             return pRetVal.get();
         }
@@ -192,19 +195,19 @@ TEST_F(LoggerTest, testLogList)
  * @see https://github.com/google/googletest/blob/main/docs/advanced.md#death-tests-and-threads
  * for more details.
  */
-TEST_F(LoggerTest, DISABLED_testAssertion)
+TEST_F(LoggerTest, testAssertion)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_DEATH(assertionDeathTest(), "");
 }
 
-TEST_F(LoggerTest, DISABLED_testAssertionWithMsg)
+TEST_F(LoggerTest, testAssertionWithMsg)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_DEATH(assertionMsgDeathTest(), "");
 }
 
-TEST_F(LoggerTest, DISABLED_testFatalError)
+TEST_F(LoggerTest, testFatalError)
 {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_DEATH(fatalDeathTest(), "");
@@ -382,4 +385,63 @@ TEST_F(LoggerTest, testForStdFunctionObject)
     auto val2 = 1000;
     auto result = submit(functor, val1, val2);
     EXPECT_EQ(val1 * val2, *(std::any_cast<int*>(result)));
+}
+
+// Regression: unknown/empty inputs dereferenced cend() (UB). Documented fallbacks are LOG_DEFAULT / "".
+TEST(LoggerConversionTest, unknownLogTypeFallsBackSafely)
+{
+    EXPECT_EQ(LOG_TYPE::LOG_DEFAULT, Logger::convertStringToLogTypeEnum(""));
+    EXPECT_EQ(LOG_TYPE::LOG_DEFAULT, Logger::convertStringToLogTypeEnum("NOT_A_TYPE"));
+    EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum("FATAL"));
+    EXPECT_EQ(std::string(), Logger::covertLogTypeEnumToString(static_cast<LOG_TYPE>(-1)));
+    EXPECT_EQ(std::string("FATAL"), Logger::covertLogTypeEnumToString(LOG_TYPE::LOG_FATAL));
+}
+
+// Regression: a string_view slice was looked up as a C string, so bytes past the view leaked into the key.
+TEST(LoggerConversionTest, lookupHonorsStringViewLength)
+{
+    const std::string backing = "FATALXYZ";
+    EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum(std::string_view(backing).substr(0, 5)));
+    const char raw[5] = {'F', 'A', 'T', 'A', 'L'};   // deliberately not null-terminated
+    EXPECT_EQ(LOG_TYPE::LOG_FATAL, Logger::convertStringToLogTypeEnum(std::string_view(raw, sizeof(raw))));
+}
+
+// Regression: log() forwarded rvalues into std::make_format_args, which libstdc++ rejects at compile time.
+TEST(LoggerConversionTest, logAcceptsRvalueArguments)
+{
+    Logger logger("%Y");
+    logger.log("{} {}", 42, std::string("rvalue"));
+    EXPECT_NE(std::string::npos, logger.getLogStream().str().find("42 rvalue"));
+}
+
+const void* logHelperLoggerAddressFromSecondTU();
+const void* logHelperMutexAddressFromSecondTU();
+const void* logHelperOpsAddressFromSecondTU();
+
+// Regression: raceMtx/loggerObj were per-TU statics while inline templates using them could be
+// merged across TUs, so a caller could lock one TU's mutex and format with another TU's logger.
+TEST(LoggerSharedStateTest, loggingStateIsSharedAcrossTranslationUnits)
+{
+    EXPECT_EQ(static_cast<const void*>(&logger::loggerObj), logHelperLoggerAddressFromSecondTU());
+    EXPECT_EQ(static_cast<const void*>(&logger::raceMtx), logHelperMutexAddressFromSecondTU());
+    EXPECT_EQ(static_cast<const void*>(&logger::loggingOps), logHelperOpsAddressFromSecondTU());
+}
+
+// Regression: a malformed runtime format string threw std::format_error out of the logging API.
+TEST(LoggerConversionTest, malformedFormatDoesNotThrow)
+{
+    Logger logger("%Y");
+    EXPECT_NO_THROW(logger.log("broken {", 1));
+    EXPECT_NE(std::string::npos, logger.getLogStream().str().find("format error"));
+}
+
+// Regression: the malformed-format fallback went through quote stripping, so a JSON-style format
+// lost both the raw text and the diagnostic.
+TEST(LoggerConversionTest, malformedQuotedFormatKeptVerbatim)
+{
+    Logger logger("%Y");
+    EXPECT_NO_THROW(logger.log(R"({"event": {})", 1));
+    const auto out = logger.getLogStream().str();
+    EXPECT_NE(std::string::npos, out.find(R"({"event": {})")) << out;
+    EXPECT_NE(std::string::npos, out.find("[format error:")) << out;
 }

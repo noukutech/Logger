@@ -1,7 +1,7 @@
 /*
  * MIT License
  * 
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -37,6 +37,8 @@
 
 #include "Logger.hpp"
 
+#include <cstdio>
+
 namespace logger
 {
     template <typename T>
@@ -55,7 +57,9 @@ namespace logger
      * @brief A global mutex to this file to protect
      * the concurrency of logger property attributes
      */
-    static std::mutex raceMtx;
+    // inline (not static): one mutex/logger per program. Per-TU copies broke when the linker
+    // picked one TU's inline template instance for callers in another TU.
+    inline std::mutex raceMtx;
 
     /**
      * @brief The logger object for the application.
@@ -65,7 +69,7 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
-    inline static Logger loggerObj("%Y%m%d_%H%M%S");
+    inline Logger loggerObj("%Y%m%d_%H%M%S");
 
     /**
      * @brief The stream object for logging operations.
@@ -76,7 +80,7 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
-    inline static auto& loggingOps = Logger::buildLoggingOpsObject();
+    inline auto& loggingOps = Logger::buildLoggingOpsObject();
 
     /**
      * @brief Set the logger properties for the current log message.
@@ -107,6 +111,55 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
+    /**
+     * @brief Format a record with the shared logger and return it, without enqueuing it.
+     * @pre The caller holds raceMtx: loggerObj and its assertion condition are shared by all threads.
+     */
+    template<typename ...Args>
+    inline std::string formatLocked
+    (   const std::string_view fileName,
+        const std::string_view funcName,
+        const std::string_view marker,
+        const size_t lineNo,
+        const std::thread::id& tid,
+        const LOG_TYPE& logType,
+        const std::string_view format_str,
+        Args&&... args
+    )
+    {
+        loggerObj.setFileName(std::string(fileName))
+                .setFunctionName(std::string(funcName))
+                .setLineNo(lineNo)
+                .setThreadId(tid)
+                .setMarker(std::string(marker))
+                .setLogType(logType);
+        loggerObj.log(format_str, args...);
+        return loggerObj.getLogStream().str();
+    }
+
+    /**
+     * @brief Format a record with the shared logger and hand it to the logging sink.
+     *
+     * Same as logMsg() but without taking the lock, so a caller (log_assert) can set the
+     * assertion condition and log in one critical section.
+     *
+     * @pre The caller holds raceMtx: loggerObj and its assertion condition are shared by all threads.
+     */
+    template<typename ...Args>
+    inline void logMsgLocked
+    (   const std::string_view fileName,
+        const std::string_view funcName,
+        const std::string_view marker,
+        const size_t lineNo,
+        const std::thread::id& tid,
+        const LOG_TYPE& logType,
+        const std::string_view format_str,
+        Args&&... args
+    )
+    {
+        loggingOps << formatLocked(fileName, funcName, marker, lineNo, tid, logType, format_str, args...);
+    }
+
     template<typename ...Args>
     inline void logMsg
     (   const std::string_view fileName,
@@ -125,15 +178,7 @@ namespace logger
         // a hold of this beautiful lady at the same
         // point of time.
         std::lock_guard<std::mutex> raceLock(raceMtx);
-        loggerObj.setFileName(fileName.data())
-                .setFunctionName(funcName.data())
-                .setLineNo(lineNo)
-                .setThreadId(tid)
-                .setMarker(marker.data())
-                .setLogType(logType);
-
-        loggerObj.log(format_str, args...);
-        loggingOps << loggerObj.getLogStream().str();
+        logMsgLocked(fileName, funcName, marker, lineNo, tid, logType, format_str, args...);
     }
 
     /**
@@ -472,6 +517,49 @@ namespace logger
      * @param [in] format_str The format string for the log message.
      * @param [in] args Additional arguments to be formatted into the log message.
      */
+    /**
+     * @brief Write a fatal/assert record to stderr with control characters escaped (\xNN).
+     * Allocation-free, so it is safe on a failing path right before abort()/exit().
+     */
+    inline void writeEscapedToStderr(const std::string_view record) noexcept
+    {
+        for (const char ch : record)
+        {
+            const auto c = static_cast<unsigned char>(ch);
+            if (c < 0x20 || c == 0x7f)
+                std::fprintf(stderr, "\\x%02x", c);
+            else
+                std::fputc(c, stderr);
+        }
+        std::fputs(" [logger: sink failed to write this record]\n", stderr);
+        std::fflush(stderr);   // stderr may be fully buffered by the host; abort() would discard it
+    }
+
+    /**
+     * @brief Persist the record that precedes process termination.
+     *
+     * Drains everything queued before it, then writes the record synchronously, so the write
+     * result belongs to this record alone. abort()/exit() skip destructors, so this is the last
+     * chance: if the sink reports a failure for this record, it goes to stderr instead.
+     *
+     * @return true if the sink wrote the record; false if it was sent to stderr instead.
+     */
+    inline bool persistTerminalRecord(LoggingOps& sink, const std::string_view record)
+    {
+        try
+        {
+            sink.flush();
+            if (sink.writeRecordNow(record))
+                return true;
+        }
+        catch (...)
+        {
+            // The record is already formatted; fall through to the stderr copy before terminating
+        }
+        writeEscapedToStderr(record);
+        return false;
+    }
+
     template<typename ...Args>
     void log_assert
     (
@@ -487,17 +575,27 @@ namespace logger
         if (cond.empty())
             return;
 
-        loggerObj.setAssertCondition(cond.data()); // Set the assertion condition
-        logMsg( fileName,
-                funcName,
-                FORWARD_ANGLE,
-                lineNo,
-                std::this_thread::get_id(),
-                LOG_TYPE::LOG_ASSERT,
-                format_str,
-                args...);
-
-        std::lock_guard<std::mutex> lock(raceMtx);
+        // Termination must happen even if logging itself fails
+        try
+        {
+            std::string record;
+            {
+                // Condition and record under one lock, so a concurrent log call cannot clear it or take it
+                std::lock_guard<std::mutex> raceLock(raceMtx);
+                loggerObj.setAssertCondition(std::string(cond));
+                record = formatLocked(fileName,
+                                      funcName,
+                                      FORWARD_ANGLE,
+                                      lineNo,
+                                      std::this_thread::get_id(),
+                                      LOG_TYPE::LOG_ASSERT,
+                                      format_str,
+                                      args...);
+            }
+            // Lock released first: atexit handlers may log, and abort/exit skip destructors so persist now
+            persistTerminalRecord(loggingOps, record);
+        }
+        catch (...) {}
         if (exitGracefuly)
         {
             std::exit(EXIT_FAILURE);
@@ -532,15 +630,25 @@ namespace logger
         Args&&... args
     )
     {
-        logMsg( fileName,
-                funcName,
-                FORWARD_ANGLE,
-                lineNo,
-                std::this_thread::get_id(),
-                LOG_TYPE::LOG_FATAL,
-                format_str,
-                args...);
-
+        // Termination must happen even if logging itself fails (e.g. bad_alloc)
+        try
+        {
+            std::string record;
+            {
+                std::lock_guard<std::mutex> raceLock(raceMtx);
+                record = formatLocked(fileName,
+                                      funcName,
+                                      FORWARD_ANGLE,
+                                      lineNo,
+                                      std::this_thread::get_id(),
+                                      LOG_TYPE::LOG_FATAL,
+                                      format_str,
+                                      args...);
+            }
+            // abort skips destructors; without this a file sink loses the fatal record
+            persistTerminalRecord(loggingOps, record);
+        }
+        catch (...) {}
         std::abort();
     }
 };  // namespace logger

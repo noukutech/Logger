@@ -10,7 +10,7 @@ MIT_LICENSE = """\
 /*
  * MIT License
  * 
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,7 @@ MIT_LICENSE = """\
  */
 
 /*
- * Author: Swarnendu RC
+ * Author: Nouku Technologies
  *
  * NOTE: This file is auto-generated. Do NOT modify this file manually.
  *       If changes are needed, please modify the generating Python script:

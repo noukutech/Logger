@@ -9,7 +9,7 @@
  *
  * MIT License
  * 
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -95,8 +95,8 @@ namespace logger
              * @param [in] dataQueue The data queue to be written to the out stream object
              * @param [out] excpPtr The exception pointer to be used for exception handling
              *
-             * @note This function is thread safe. It uses mutex and condition variable
-             * to ensure that only one thread can write to the outstream object at a time.
+             * @note This function is thread safe. A mutex ensures that only one thread
+             * writes to the outstream object at a time.
              */
             void writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& excpPtr) override;
 
@@ -105,8 +105,6 @@ namespace logger
 
         private:
             std::mutex m_mtx;
-            std::condition_variable m_cv;
-            std::atomic_bool m_isOpsRunning;
     };
 };  // logger namespace
 

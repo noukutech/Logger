@@ -1,0 +1,93 @@
+name: CI
+
+# 64-bit only: no 32-bit (x86 / Win32 / i386 / -m32) jobs on any OS.
+on:
+  push:
+  pull_request:
+
+jobs:
+  unix:
+    name: ${{ matrix.os }} / ${{ matrix.cxx }} / ${{ matrix.variant }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cxx: g++-14,     variant: plain }
+          - { os: ubuntu-24.04, cxx: clang++-18, variant: plain }
+          - { os: ubuntu-24.04, cxx: g++-14,     variant: asan }
+          - { os: ubuntu-24.04, cxx: clang++-18, variant: tsan }
+          - { os: ubuntu-24.04, cxx: g++-14,     variant: shared }
+          - { os: macos-latest, cxx: clang++,    variant: plain }
+          - { os: macos-15-intel, cxx: clang++,  variant: plain }   # macOS x86_64
+          - { os: macos-latest, cxx: clang++,    variant: asan }
+          - { os: macos-latest, cxx: clang++,    variant: tsan }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtest-dev g++-14 clang-18
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install googletest
+
+      - name: Build
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            asan)   SAN="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" ;;
+            tsan)   SAN="-fsanitize=thread" ;;
+            *)      SAN="" ;;
+          esac
+          LIB=static; [ "${{ matrix.variant }}" = shared ] && LIB=shared
+          make CXX="${{ matrix.cxx }} $SAN" BUILD_TYPE=all BUILD_TEST=yes LIB_TYPE=$LIB -j4
+
+      - name: Test (release + debug, shuffled x10)
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_stack_use_after_return=1   # LeakSanitizer is on by default on Linux; unsupported on macOS arm64
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: |
+          # Linux kernels with high mmap ASLR entropy break TSan's shadow memory mapping
+          if [ "${{ runner.os }}" = Linux ]; then sudo sysctl vm.mmap_rnd_bits=28; fi
+          # Homebrew's gtest is not ASan-instrumented, so libc++ container annotations report
+          # false container-overflows inside gtest itself (seen in GTestIsInitialized)
+          if [ "${{ runner.os }}" = macOS ]; then export ASAN_OPTIONS="$ASAN_OPTIONS:detect_container_overflow=0"; fi
+          ./bin/TestLogger   --gtest_shuffle --gtest_repeat=10
+          ./bin/TestLogger_d --gtest_shuffle --gtest_repeat=10
+
+      - name: File-backed fatal/assert flush check
+        if: matrix.variant == 'plain'
+        shell: bash
+        run: tests/fatal_flush_check.sh "${{ matrix.cxx }}"
+
+  windows:
+    name: windows / mingw-w64 x86_64 (UCRT64) / ${{ matrix.cxx }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-gtest
+      - name: Build
+        run: make CXX=${{ matrix.cxx }} BUILD_TYPE=all BUILD_TEST=yes -j4
+      - name: Test (release + debug, shuffled x10)
+        run: |
+          ./bin/TestLogger   --gtest_shuffle --gtest_repeat=10
+          ./bin/TestLogger_d --gtest_shuffle --gtest_repeat=10

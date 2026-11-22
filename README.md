@@ -19,7 +19,7 @@ A lightweight, efficient, and easy-to-use logging utility library for C++ projec
 
 ## Overview
 
-This Logger library offers simple logging capabilities, including multiple log levels, formatted output, and timestamping. It is designed to be lightweight, performant, and straightforward to integrate into any C++ project (min version C++-20) without complicated setup or heavy dependencies. Please note that this currently supports only MacOS and Linux platforms.
+This Logger library offers simple logging capabilities, including multiple log levels, formatted output, and timestamping. It is designed to be lightweight, performant, and straightforward to integrate into any C++ project (min version C++-20) without complicated setup or heavy dependencies. Supported platforms (64-bit only): macOS (arm64, x86_64), Linux (x86_64, arm64) and Windows (x86_64, via MinGW-w64 under MSYS2 UCRT64; MSVC is not supported because the build is a GNU makefile).
 
 ## Features
 
@@ -28,7 +28,7 @@ This Logger library offers simple logging capabilities, including multiple log l
 - Support for console output and file output (either one at a time).
 - Customizable log message format.
 - Thread-safe logging to prevent message interleaving in multithreaded applications.
-- Minimal dependencies — uses only the C++ standard library and fmt for formatting.
+- Minimal dependencies — uses only the C++ standard library (`std::format` for formatting).
 - Simple APIs for quick logging.
 - Configurable log message format.
 - Easy to integrate with existing projects.
@@ -69,14 +69,18 @@ This Logger library offers simple logging capabilities, including multiple log l
 
 ### Prerequisits
 
-- C++ compiler supporting `C++-20` (e.g., GCC 10+, Clang 10+)
-- make for building the library (currently build process is make based and uses `clang++` for compilation)
+- A C++20 compiler and standard library with `<format>` support: GCC 13+ (libstdc++ 13+), or Clang with a `<format>`-capable library (libc++ 17+, or libstdc++ 13+). Tested: Apple clang 21 (libc++), GCC 14 and Clang 18 on Ubuntu 24.04 (libstdc++ 14), and MSYS2 UCRT64 GCC/Clang on Windows
+- make for building the library (make based; `clang++` by default, override with e.g. `make CXX=g++-14`)
+- On macOS, Homebrew include/lib paths are picked up automatically (`brew --prefix`), so Homebrew's `googletest` works on Apple Silicon without extra flags
+- On Windows, build inside an MSYS2 UCRT64 shell with `make`, `mingw-w64-ucrt-x86_64-gcc` (or `-clang`) and `mingw-w64-ucrt-x86_64-gtest` installed
 - Google Test framework for running tests (optional, but recommended)
-- `fmt` library for formatting (if not installed already, it will be downloaded and installed during the build process)
 
 Clone the repository:
 
-`git clone https://github.com/SwarnenduRC/Logger.gitcd Logger`
+```bash
+git clone https://github.com/noukutech/Logger.git
+cd Logger
+```
 
 ### Build the library and install (manual)
 
@@ -89,11 +93,11 @@ make
 
 > **Note**: The library will be built as a static library by default. You can change the `LIB_TYPE` variable in the `makefile` to `shared` if you want to build it as a shared library.
 > Release build will be created by default. You can change the `BUILD_TYPE` variable in the `makefile` to `debug` if you want to build it as a debug library. `all` target will build both release and debug libraries.
-> By default Tests are not built. You can change the `BUILD_TESTS` variable in the `makefile` to `yes` to build the tests.
+> By default Tests are not built. You can change the `BUILD_TEST` variable in the `makefile` to `yes` to build the tests.
 > If you want to do this all in one line rather than changing the `makefile`, you can run the following command:
 
 ```bash
-make clean; make LIB_TYPE=shared BUILD_TYPE=debug BUILD_TESTS=yes
+make clean; make LIB_TYPE=shared BUILD_TYPE=debug BUILD_TEST=yes
 ```
 
 #### Install the library
@@ -125,11 +129,10 @@ Where `buildNinstall.sh` is a script that will build the library and install it 
 - `-BUILD_TYPE`: Set the build type (release or debug). Default is release.
 - `-LIB_TYPE`: Set the library type (static or shared). Default is static.
 - `-FILE_LOGGING`: Enable file logging. Default is no.
-- `-LOG_FILE_NAME`: Set the log file name. Default is Logger.log.
-- `-BUILD_TESTS`: Enable building tests. Default is no.
+- `-LOG_FILE_NAME`: Set the log file name. There is no default: without it the logger uses console output, even with `-FILE_LOGGING=yes`.
+- `-BUILD_TEST`: Enable building tests. Default is no.
 
-> **Note**: The script will automatically download and install the `fmt` library if it is not already installed.
-> The default installation locations are:
+> **Note**: The default installation locations are:
 >
 > - Library files: `/usr/local/lib`
 > - Header files: `/usr/local/include/logger`
@@ -142,7 +145,7 @@ For more details on the script, you can run
 
 ## Configuration
 
-You can configure the logger by modifying the `Logger.h` file or by passing configuration options during build and installation. The logger supports various configuration options such as cconsole logging/file logging, log file name (if file logging is enabled), max log file size, msg format, and more.
+You can configure the logger by modifying the `Logger.hpp` file or by passing configuration options during build and installation. The logger supports various configuration options such as cconsole logging/file logging, log file name (if file logging is enabled), max log file size, msg format, and more.
 
 Please refer to buildNinstall.sh script for more details on the available configuration options or alternatively run
 
@@ -212,6 +215,18 @@ by running following command:
 
 - `--gtest_shuffle` Shuffles the test cases in each iteration (optional)
 - `--gtest_repeat=3` Repeats the test cases at least 3 times (optional)
+
+Sanitizer builds: pass the flags through `CXX` and use separate output directories so objects are never reused across variants:
+
+```bash
+make OBJ_DIR=build/tsan/obj LIB_DIR=build/tsan/lib BIN_DIR=build/tsan/bin TEST_OBJ_DIR=build/tsan/obj/test \
+     CXX="clang++ -fsanitize=thread" BUILD_TYPE=debug BUILD_TEST=yes
+./build/tsan/bin/TestLogger_d --gtest_shuffle --gtest_repeat=5
+```
+
+`tests/fatal_flush_check.sh [compiler]` (run from the repo root) builds small file-logging programs and checks that `LOG_FATAL`/`LOG_ASSERT` records reach the log file before the process aborts or exits. The gtest death tests cannot observe this because they log to the console.
+
+CI (`.github/workflows/ci.yml`) runs the suite on Linux (gcc/clang, ASan+LSan, TSan, shared), macOS (arm64 and Intel, ASan, TSan) and Windows (MinGW-w64 gcc/clang).
 
 ![Test cases run](docs/TestCases.png)
 
@@ -293,7 +308,7 @@ TEST_F(ClockTests, testGetDayOfWeek)
     std::ostringstream oss;
     oss << std::put_time(localTime, "%A");
     EXPECT_STREQ(expDayOfWeek.c_str(), oss.str().c_str());
-}q
+}
 ```
 
 ## Contributing
@@ -316,8 +331,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-Maintainer: Swarnendu Roy Chowdhury
-GitHub: [SwarnenduRC](https://github.com/SwarnenduRC)
+Maintainer: Nouku Technologies
+GitHub: [noukutech](https://github.com/noukutech)
 
 ---
 

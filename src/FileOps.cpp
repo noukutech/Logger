@@ -5,7 +5,7 @@
  *
  * MIT License
  *
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -132,7 +132,7 @@ static constexpr std::string_view DEFAULT_FILE_EXTN = ".txt";
     catch(...)
     {
         auto excpPtr = std::current_exception();
-        file.addRaisedException(excpPtr);
+        try { file.addRaisedException(excpPtr); } catch (...) {}   // best effort; keep noexcept
     }
     return false;
 }
@@ -177,7 +177,7 @@ static constexpr std::string_view DEFAULT_FILE_EXTN = ".txt";
     catch(...)
     {
         auto excpPtr = std::current_exception();
-        file.addRaisedException(excpPtr);
+        try { file.addRaisedException(excpPtr); } catch (...) {}   // best effort; keep noexcept
     }
     return false;
 }
@@ -186,9 +186,7 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
 {
     //First of all let us wait for any ongoing file operations (if any) to finish
     std::unique_lock<std::mutex> lock(m_FileOpsMutex);
-    m_FileOpsCv.wait(lock, [this] { return !m_isFileOpsRunning; });
 
-    m_isFileOpsRunning = true;  // Make the flag true to indicate that file operations are in progress
 
     if (!std::get<0>(fileDetails).empty())
         m_FileName = std::get<0>(fileDetails);
@@ -230,9 +228,11 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
 
         if (m_FilePath.empty())
         {
-            auto pathSeparator = m_FileName.find_last_of('/');
-            if (pathSeparator == std::string::npos) //If it is on windows sytem
-                pathSeparator = m_FileName.find_last_of('\\');
+#if defined(_WIN32)
+            auto pathSeparator = m_FileName.find_last_of("/\\");   // Windows accepts both separators
+#else
+            auto pathSeparator = m_FileName.find_last_of('/');      // '\\' is a valid file-name character on POSIX
+#endif
 
             if (pathSeparator != std::string::npos)
             {
@@ -248,7 +248,11 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
         }
         else //If the file path doesn't end with a separator, then add it
         {
+#if defined(_WIN32)
             if (m_FilePath.back() != '/' && m_FilePath.back() != '\\')
+#else
+            if (m_FilePath.back() != '/')   // a trailing '\\' is part of the directory name on POSIX
+#endif
             {
                 m_FilePath += getSeparator();
             }
@@ -258,8 +262,6 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
     }
     //All done, now we can set the flag to false
     //and notify any waiting threads
-    m_isFileOpsRunning = false;
-    m_FileOpsCv.notify_one();
 }
 
 FileOps::FileOps(const std::uintmax_t maxFileSize,
@@ -272,7 +274,6 @@ FileOps::FileOps(const std::uintmax_t maxFileSize,
     , m_FileExtension(fileExtension)
     , m_FileContent(DataQ())
     , m_MaxFileSize(maxFileSize)
-    , m_isFileOpsRunning(false)
 {
     auto fileDetails = std::make_tuple(m_FileName, m_FilePath, m_FileExtension);
     // Initialize the file path object
@@ -285,6 +286,7 @@ FileOps::FileOps(const std::uintmax_t maxFileSize,
 
 FileOps::~FileOps()
 {
+    stopWatcher();
 }
 
 FileOps& FileOps::setFileName(const std::string_view fileName)
@@ -321,10 +323,8 @@ std::uintmax_t FileOps::getFileSize()
     {
         flush();
         std::scoped_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_isFileOpsRunning = true;
         std::error_code ec;
         fileSize = std::filesystem::file_size(m_FilePathObj, ec);
-        m_isFileOpsRunning = false;
         if (ec)
         {
             std::ostringstream os;
@@ -340,19 +340,19 @@ std::uintmax_t FileOps::getFileSize()
 bool FileOps::createFile()
 {
     auto retVal = false;
-    if (!fileExists())
     {
-        std::scoped_lock<std::mutex> lock(m_FileOpsMutex);
-        m_isFileOpsRunning = true;
-        std::ofstream file(m_FilePathObj);
-        if (file.is_open())
+        std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
+        // Check and create under the lock; append mode never truncates a file another thread just created
+        if (!fileExists())
         {
-            file.close();
-            retVal = true;
+            std::ofstream file(m_FilePathObj, std::ios::app);
+            if (file.is_open())
+            {
+                file.close();
+                retVal = true;
+            }
         }
     }
-    m_isFileOpsRunning = false;
-    m_FileOpsCv.notify_one();
     return retVal;
 }
 
@@ -362,12 +362,9 @@ bool FileOps::deleteFile()
     if (fileExists())
     {
         std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_FileOpsCv.wait(fileLock, [this] { return !m_isFileOpsRunning; });
-        m_isFileOpsRunning = true;
-        retVal = std::filesystem::remove(m_FilePathObj);
-        m_isFileOpsRunning = false;
+        std::error_code ec;   // non-throwing overload: failure is reported via the return value
+        retVal = std::filesystem::remove(m_FilePathObj, ec);
         fileLock.unlock();
-        m_FileOpsCv.notify_one();
     }
     return retVal;
 }
@@ -382,15 +379,13 @@ bool FileOps::renameFile(const std::string_view newFileName)
     if (fileExists() && newFileName != m_FileName)
     {
         std::unique_lock<std::mutex> lock(m_FileOpsMutex);
-        m_FileOpsCv.wait(lock, [this] { return !m_isFileOpsRunning; });
-        m_isFileOpsRunning = true;
 
         std::filesystem::path newPath = m_FilePathObj.parent_path() / newFileName;
-        std::filesystem::rename(m_FilePathObj, newPath);
-        m_isFileOpsRunning = false;
+        // error_code overload: failure is reported via the return value instead of throwing
+        std::error_code ec;
+        std::filesystem::rename(m_FilePathObj, newPath, ec);
         lock.unlock();
-        m_FileOpsCv.notify_all();
-        success = true;
+        success = !ec;
     }
     return success;
 }
@@ -404,11 +399,8 @@ void FileOps::readFile()
     // and wait for it to be processed before reading the file
     flush();
 
-    DataQ().swap(m_FileContent); // Clear the file content queue
-
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-    m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-    m_isFileOpsRunning = true;
+    DataQ().swap(m_FileContent); // Clear under the lock: a concurrent readFile()/getFileContent() must not see it half-filled
 
     if (std::filesystem::exists(m_FilePathObj))
     {
@@ -424,23 +416,17 @@ void FileOps::readFile()
         }
         else
         {
-            m_isFileOpsRunning = false;
             fileLock.unlock();
-            m_FileOpsCv.notify_all();
             throw std::runtime_error("Failed to open file: " + m_FilePathObj.string());
         }
     }
-    m_isFileOpsRunning = false;
     fileLock.unlock();
-    m_FileOpsCv.notify_all();
 }
 
 bool FileOps::clearFile()
 {
     auto retVal = false;
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-    m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-    m_isFileOpsRunning = true;
 
     if (fileExists())
     {
@@ -451,9 +437,7 @@ bool FileOps::clearFile()
             retVal = true;
         }
     }
-    m_isFileOpsRunning = false;
     fileLock.unlock();
-    m_FileOpsCv.notify_all();
     return retVal;
 }
 
@@ -464,9 +448,13 @@ void FileOps::writeDataTo(const std::string_view data)
         if (data.empty())
             return;
 
+        // Existence check, size check, rotation and enqueue are one step per sink; otherwise
+        // writers racing on a missing/just-rotated file enqueue without the size check
+        std::scoped_lock<std::mutex> rotateLock(m_rotateMtx);
         if (!fileExists())
         {
-            if (createFile())
+            // Another writer may have created it first; that is fine
+            if (createFile() || fileExists())
                 push(data);
             else
                 throw std::runtime_error("File neither exists nor can be created");
@@ -486,14 +474,20 @@ void FileOps::writeDataTo(const std::string_view data)
             flush(); //Flush the data whatever in the queue waiting to be written
             // Now get the file size
             auto currFileSize = getFileSize();
-            if ((currFileSize + data.size()) >= m_MaxFileSize)
+            // Each 4096-byte chunk is written as its own line, so count one terminator per chunk
+            const auto chunks = (data.size() + bufferSize - 2) / (bufferSize - 1);
+            if ((currFileSize + data.size() + chunks) > m_MaxFileSize)   // an exact fit stays in the current file
             {
                 Clock clock;
                 auto currentTimeStr = clock.getLocalTimeStr("%d%m%Y_%H%M%S");
                 auto currentFileName = getFileName();
                 auto currentFileExtension = getFileExtension();
-                auto newFileName = currentFileName.substr(0, currentFileName.find(currentFileExtension))
-                                     + "_" + currentTimeStr + currentFileExtension;
+                const auto baseName = currentFileName.substr(0, currentFileName.find(currentFileExtension))
+                                     + "_" + currentTimeStr;
+                auto newFileName = baseName + currentFileExtension;
+                // Two rotations within one second must not overwrite the earlier rotated file
+                for (int suffix = 1; std::filesystem::exists(m_FilePathObj.parent_path() / newFileName); ++suffix)
+                    newFileName = baseName + "_" + std::to_string(suffix) + currentFileExtension;
                 if (renameFile(newFileName))
                 {
                     setFileName(currentFileName);
@@ -509,7 +503,7 @@ void FileOps::writeDataTo(const std::string_view data)
     }
     catch(...)
     {
-        m_excpPtrVec.emplace_back(std::current_exception());
+        try { addRaisedException(std::current_exception()); } catch (...) {}   // best effort
     }
 }
 
@@ -522,11 +516,9 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
     {
         std::string errMsg;
         std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-        m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-        m_isFileOpsRunning = true;
 
         std::ofstream file(m_FilePathObj, std::ios::out | std::ios::app | std::ios::binary);
-        std::array<char, bufferSize> data;
+        std::array<char, bufferSize> data{};
         if (file.is_open())
         {
             while (!dataQueue.empty())
@@ -538,6 +530,14 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
                 file.flush();
             }
             file.close();
+            // Opening can succeed while writing fails later (e.g. disk full); report it instead of dropping silently
+            if (file.fail())
+            {
+                std::ostringstream osstr;
+                osstr << "WRITING_ERROR : [" << std::this_thread::get_id() << "]: Failed writing log data to file ["
+                      << m_FilePathObj.string() << "]\n";
+                errMsg = osstr.str();
+            }
         }
         else
         {
@@ -548,9 +548,7 @@ void FileOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& ex
             osstr << "] can not be opened to write log data: " << data.data() << "\n";
             errMsg = osstr.str();
         }
-        m_isFileOpsRunning = false;
         fileLock.unlock();
-        m_FileOpsCv.notify_all();
 
         if (!errMsg.empty())
             throw std::runtime_error(errMsg);
@@ -565,17 +563,16 @@ bool FileOps::isEmpty()
 {
     flush();
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
-    m_FileOpsCv.wait(fileLock, [this]{ return !m_isFileOpsRunning; });
-    m_isFileOpsRunning = true;
     std::ifstream file(m_FilePathObj.string(), std::ios::ate | std::ios::binary);
     if (!file)
+    {
+        fileLock.unlock();
         return false;
+    }
 
     auto retVal = file.tellg();
     file.close();
-    m_isFileOpsRunning = false;
     fileLock.unlock();
-    m_FileOpsCv.notify_one();
     return retVal == 0;
 }
 

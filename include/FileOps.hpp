@@ -4,12 +4,12 @@
  *        writing, appending, renaming, and deleting files, with thread-safe mechanisms.
  *        Supports file size limits, file content buffering, and exception handling.
  *
- * Author: Swarnendu
+ * Author: Nouku Technologies
  * Date: May, 2025
  *
  * MIT License
  *
- * Copyright (c) 2025 Swarnendu Roy Chowdhury
+ * Copyright (c) 2025 Nouku Technologies
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -308,7 +308,7 @@ namespace logger
              *               The queue is thread safe and can be accessed by multiple
              *               threads at the same time.
              */
-            inline DataQ getFileContent() const                             { return m_FileContent;                             }
+            inline DataQ getFileContent() const                             { std::scoped_lock<std::mutex> lock(m_FileOpsMutex); return m_FileContent; }
             /**
              * @brief Checks if the file path is empty or not
              *
@@ -446,9 +446,8 @@ namespace logger
             DataQ m_FileContent;
             std::filesystem::path m_FilePathObj;
             std::uintmax_t m_MaxFileSize;
-            std::mutex m_FileOpsMutex;
-            std::condition_variable m_FileOpsCv;
-            std::atomic_bool m_isFileOpsRunning;
+            mutable std::mutex m_FileOpsMutex;   ///< Sole guard for file I/O and m_FileContent; RAII locks release it on every exit, including throws.
+            std::mutex m_rotateMtx;              ///< Serializes existence check, size check, rotation and enqueue in writeDataTo().
     };
 };  //logger namespace
 

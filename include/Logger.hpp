@@ -1,7 +1,7 @@
 /*
  * MIT License
  * 
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -39,7 +39,7 @@
 #include "LoggingOps.hpp"
 
 #include <cassert>
-#include <fmtmsg.h>
+#include <format>
 #include <unordered_map>
 
 namespace logger
@@ -278,7 +278,7 @@ namespace logger
             template<typename ...Args>
             void log(const std::string_view formatStr, Args&&... args)
             {
-                vlog(formatStr, std::make_format_args(std::forward<Args>(args)...));
+                vlog(formatStr, std::make_format_args(args...));  // make_format_args needs lvalues (libstdc++ rejects forwarded rvalues)
             }
 
             /**

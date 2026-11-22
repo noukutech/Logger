@@ -5,7 +5,7 @@
  * @copyright
  * MIT License
  * 
- * Copyright (c) 2024 Swarnendu RC
+ * Copyright (c) 2024 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -34,6 +34,7 @@
 #include <list>
 #include <array>
 #include <mutex>
+#include <cstdint>
 #include <thread>
 #include <atomic>
 #include <exception>
@@ -96,7 +97,11 @@ namespace logger
             /**
              * @brief Get all the exceptions happened during the file ops
              *
-             * @return std::filesystem::path The file path object
+             * @warning Returns a reference to the live list, which producer and watcher
+             * threads append to. Only read it after all writers have stopped and flush()
+             * has returned; reading it concurrently with logging is a data race.
+             *
+             * @return const reference to the recorded exceptions
              */
             inline const std::vector<std::exception_ptr>& getAllExceptions() noexcept       { return m_excpPtrVec; }
 
@@ -107,7 +112,20 @@ namespace logger
              * @note This function is thread safe. It uses mutex to ensure that
              * only one thread can add an exception at a time.
              */
-            inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { m_excpPtrVec.emplace_back(excpPtr); }
+            /**
+             * @brief Write one record synchronously and report whether *it* was written.
+             *
+             * Bypasses the queue and calls writeToOutStreamObject() on the calling thread, so the
+             * result belongs to this record alone (not to any other queued batch). Used by the
+             * fatal/assert paths after flush(), right before the process terminates. A failure is
+             * also added to the exception list. File rotation is not applied to this record.
+             *
+             * @param [in] record The formatted record.
+             * @return true if the sink reported no error for this record.
+             */
+            bool writeRecordNow(const std::string_view record);
+
+            inline void addRaisedException(const std::exception_ptr& excpPtr)      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 
             /**
              * @brief Default constructor for LoggingOps class
@@ -425,11 +443,29 @@ namespace logger
              */
             void push(const std::string_view data);
 
+            /**
+             * @brief Stop the watcher thread after it has written every accepted record.
+             *
+             * Closes admission (later push() calls are rejected and reported through the
+             * exception list), wakes the watcher, waits for it to drain the queue and joins it.
+             * Idempotent: calling it again is a no-op.
+             *
+             * @note Derived classes must call this from their own destructor, so the watcher
+             * never calls writeToOutStreamObject() on an already destroyed derived object.
+             */
+            void stopWatcher();
+
             BufferQ m_DataRecords;
             std::mutex m_DataRecordsMtx;
             std::condition_variable m_DataRecordsCv;
             std::atomic_bool m_dataReady;
             std::atomic_bool m_shutAndExit;
+            /// Number of records accepted by push(). Guarded by m_DataRecordsMtx; flush() waits on it.
+            std::uint64_t m_pushedSeq = 0;
+            /// Number of records the watcher has handed to the sink. Guarded by m_DataRecordsMtx.
+            std::uint64_t m_writtenSeq = 0;
+            /// Set once the watcher has drained the queue and exited. Guarded by m_DataRecordsMtx.
+            bool m_watcherDone = false;
             std::thread m_watcher;
 
             /**
@@ -438,6 +474,7 @@ namespace logger
              * during the data operations.
              */
             std::vector<std::exception_ptr> m_excpPtrVec;
+            std::mutex m_excpMtx;   ///< Guards m_excpPtrVec against concurrent producers and the watcher.
 
         private:
             /**

@@ -1,7 +1,7 @@
 /*
  * MIT License
  * 
- * Copyright (c) 2024 Swarnendu RC
+ * Copyright (c) 2024 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,40 +33,44 @@
 #include <bitset>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 
 using namespace logger;
 
 static std::mutex m_excpFileMtx;
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::ostringstream& oss)
+namespace logger
+{
+/*friend*/ void operator<<(LoggingOps& obj, const std::ostringstream& oss)
 {
     if (oss.good())
         obj.write(oss.str());
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::istringstream& iss)
+/*friend*/ void operator<<(LoggingOps& obj, const std::istringstream& iss)
 {
     if (iss.good())
         obj.write(iss.str());
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::string_view data)
+/*friend*/ void operator<<(LoggingOps& obj, const std::string_view data)
 {
     if (!data.empty())
         obj.write(data);
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::vector<std::string>& dataVec)
+/*friend*/ void operator<<(LoggingOps& obj, const std::vector<std::string>& dataVec)
 {
     if (!dataVec.empty())
         obj.write(dataVec);
 }
 
-/*friend*/ void logger::operator<<(LoggingOps& obj, const std::list<std::string>& dataList)
+/*friend*/ void operator<<(LoggingOps& obj, const std::list<std::string>& dataList)
 {
     if (!dataList.empty())
         obj.write(dataList);
 }
+}   // namespace logger
 
 LoggingOps::LoggingOps()
     : m_DataRecords()
@@ -78,19 +82,62 @@ LoggingOps::LoggingOps()
 
 /*virtual*/LoggingOps::~LoggingOps()
 {
-    // Wait for any ongoing data operations to finish
-    std::unique_lock<std::mutex> dataLock(m_DataRecordsMtx);
-    // Set the flag to true to indicate that we are shutting down
-    m_shutAndExit = true;
-    // Notify the watcher thread to wake up and complete
-    // any pending operations before exiting
-    dataLock.unlock();
-    m_DataRecordsCv.notify_one();
+    // Derived classes stop the watcher in their own destructors (while their
+    // overrides are still alive); this call is a no-op in that case.
+    stopWatcher();
+
+    collectAndPrintExceptions();
+}
+
+void LoggingOps::stopWatcher()
+{
+    {
+        std::scoped_lock<std::mutex> dataLock(m_DataRecordsMtx);
+        // Set flag true to indicate shutting down; the watcher drains pending records first
+        m_shutAndExit = true;
+    }
+    m_DataRecordsCv.notify_all();
 
     if (m_watcher.joinable())
         m_watcher.join();
+}
 
-    collectAndPrintExceptions();
+namespace
+{
+    // Split a record into null-terminated chunks; the last byte of every chunk is reserved for '\0'.
+    // `onPushed` runs after each chunk is stored, so a throw on a later chunk leaves every
+    // already-stored chunk accounted for.
+    template<typename OnPushed>
+    void appendChunks(BufferQ& queue, const std::string_view data, OnPushed onPushed)
+    {
+        constexpr size_t chunkSize = bufferSize - 1;
+        std::array<char, bufferSize> dataRecord{};
+        for (size_t pos = 0; pos < data.size(); pos += chunkSize)
+        {
+            const auto chunk = data.substr(pos, chunkSize);
+            std::copy(chunk.begin(), chunk.end(), dataRecord.begin());
+            std::fill(dataRecord.begin() + chunk.size(), dataRecord.end(), '\0');
+            queue.push(dataRecord);
+            onPushed();
+        }
+    }
+}
+
+bool LoggingOps::writeRecordNow(const std::string_view record)
+{
+    if (record.empty())
+        return true;
+    BufferQ single;
+    appendChunks(single, record, []() {});
+    std::exception_ptr excpPtr = nullptr;
+    writeToOutStreamObject(std::move(single), excpPtr);
+    if (excpPtr)
+    {
+        // Best effort: the result below must not depend on being able to store the error
+        try { addRaisedException(excpPtr); } catch (...) {}
+        return false;
+    }
+    return true;
 }
 
 void LoggingOps::push(const std::string_view data)
@@ -98,107 +145,107 @@ void LoggingOps::push(const std::string_view data)
     if (data.empty())
         return;
 
-    auto push = [this](std::array<char, bufferSize>& dataRecord, const std::string_view data)
+    bool notifyWatcher = false;
+    std::exception_ptr pushFailure = nullptr;
     {
-        std::copy(data.begin(), data.end(), dataRecord.begin());
-        if (data.size() < dataRecord.size())
-        {
-            auto dataSize = data.size();
-            std::fill(dataRecord.begin() + dataSize, dataRecord.end(), '\0');
-        }
-        m_DataRecords.push(dataRecord);
-    };
-    
-    {
-        std::array<char, bufferSize> dataRecord; // One extra byte for null termination
         std::scoped_lock<std::mutex> lock(m_DataRecordsMtx);
-        if (data.size() > dataRecord.size())
+        // Admission closes as soon as shutdown starts, so steady producers cannot keep the watcher from exiting
+        if (m_shutAndExit)
         {
-            std::string dataCopy = data.data();
-            while (dataCopy.size() > dataRecord.size()) // Split the data into 1024 byte chunks
-            {
-                push(dataRecord, dataCopy.substr(0, dataRecord.size() - 1));
-                dataRecord.fill('\0');
-                dataCopy = dataCopy.substr(dataRecord.size());
-            }
-            if (!dataCopy.empty())
-            {
-                push(dataRecord, dataCopy);
-            }
+            addRaisedException(std::make_exception_ptr(std::runtime_error("Log record dropped: logging after shutdown")));
+            return;
         }
-        else
+        try
         {
-            push(dataRecord, data);
+            appendChunks(m_DataRecords, data, [this]() { ++m_pushedSeq; });
+        }
+        catch (...)
+        {
+            // Chunks stored before the failure are accepted; still apply the wake-up rule below
+            pushFailure = std::current_exception();
+        }
+        // Once the queue holds at least 256 records, wake the watcher to write them out
+        if (m_DataRecords.size() >= 256)
+        {
+            m_dataReady = true;
+            notifyWatcher = true;
         }
     }
-    // If the data queue contains at least 256 elements
-    // then notify the watcher thread that data is available
-    // and it can start writing to the outstream object
-    if (m_DataRecords.size() == 256)
-    {
-        m_dataReady = true;
-        m_DataRecordsCv.notify_one();
-    }
+    if (notifyWatcher)
+        m_DataRecordsCv.notify_all();
+    if (pushFailure)
+        std::rethrow_exception(pushFailure);
 }
 
 bool LoggingOps::pop(BufferQ& data)
 {
+    // Caller holds m_DataRecordsMtx
+    m_dataReady = false;
     if (m_DataRecords.empty())
         return false;
 
-    // Clear the outgoing data buffer
     BufferQ().swap(data);
     data.swap(m_DataRecords);
-    m_dataReady = false;
-
     return true;
 }
 
 void LoggingOps::keepWatchAndPull()
 {
     BufferQ dataq;
-    // It is an infinite loop, but it will break out of the loop
-    // when the m_shutAndExit flag is set to true
     do
     {
         std::unique_lock<std::mutex> dataLock(m_DataRecordsMtx);
         m_DataRecordsCv.wait(dataLock, [this]{ return m_dataReady || m_shutAndExit.load(); });
 
-        auto success = pop(dataq);
+        const bool shutdown = m_shutAndExit.load();
+        const bool success = pop(dataq);
+        const auto batchSize = dataq.size();
         dataLock.unlock();
-        m_DataRecordsCv.notify_one();
-        // Spawn a thread to write to the file
-        // and pass the data queue to it so that
-        // the data records queue can be free for
-        // other threads to push data to it
-        // and the file can be written to in parallel
-        // The thread will be joined after the file is written
-        std::thread writerThread;
-        std::exception_ptr excpPtr = nullptr;
+
         if (success)
         {
-            writerThread = std::thread([this, &dataq, &excpPtr](){ writeToOutStreamObject(std::move(dataq), excpPtr); });
-        }
-        if (writerThread.joinable())
-        {
-            if (excpPtr)
-                m_excpPtrVec.emplace_back(excpPtr);
+            // Write on a separate thread so the records queue stays free for producers
+            std::exception_ptr excpPtr = nullptr;
+            std::thread writerThread([this, &dataq, &excpPtr](){ writeToOutStreamObject(std::move(dataq), excpPtr); });
             writerThread.join();
+            if (excpPtr)
+            {
+                // Best effort: the watcher must keep running and advance m_writtenSeq, or flush() would hang
+                try { addRaisedException(excpPtr); } catch (...) {}
+            }
         }
 
-        if (m_shutAndExit)
+        dataLock.lock();
+        if (success)
+            m_writtenSeq += batchSize;
+        // Admission is already closed; exit once every accepted record is written
+        const bool done = shutdown && m_DataRecords.empty();
+        if (done)
+            m_watcherDone = true;
+        dataLock.unlock();
+        // Wake flush() waiters
+        m_DataRecordsCv.notify_all();
+
+        if (done)
             break;
     } while (true);
 }
 
 void LoggingOps::flush()
 {
-    if (!m_DataRecords.empty())
+    std::unique_lock<std::mutex> dataLock(m_DataRecordsMtx);
+    // Wait only for records queued before this call, so steady producers cannot starve us
+    const auto target = m_pushedSeq;
+    // Shutdown does not release us early: the watcher drains every accepted record before it exits
+    while (m_writtenSeq < target && !m_watcherDone)
     {
-        m_dataReady = true;
-        m_DataRecordsCv.notify_one();
-        // Give it sometime to get flashed
-        std::this_thread::sleep_for(std::chrono::microseconds(200));
+        // Re-arm on every wake-up: the watcher clears m_dataReady when it pops a batch
+        if (!m_DataRecords.empty())
+        {
+            m_dataReady = true;
+            m_DataRecordsCv.notify_all();
+        }
+        m_DataRecordsCv.wait(dataLock);
     }
 }
 

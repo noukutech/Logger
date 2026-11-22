@@ -36,13 +36,13 @@ using namespace logger;
 /*static*/LOG_TYPE Logger::convertStringToLogTypeEnum(const std::string_view type) noexcept
 {
     if (type.empty())
-        return m_stringToEnumMap.cend()->second;
+        return LOG_TYPE::LOG_DEFAULT;   // documented fallback; dereferencing cend() was UB
 
-    auto itr = m_stringToEnumMap.find(type.data());
+    auto itr = m_stringToEnumMap.find(std::string(type));   // length-aware: a string_view need not be null-terminated
     if (itr != m_stringToEnumMap.end())
         return itr->second;
     else
-        return m_stringToEnumMap.cend()->second;
+        return LOG_TYPE::LOG_DEFAULT;
 }
 
 /*static*/std::string Logger::covertLogTypeEnumToString(const LOG_TYPE& type) noexcept
@@ -52,14 +52,16 @@ using namespace logger;
     if (itr != m_EnumToStringMap.end())
         return itr->second;
     else
-        return m_EnumToStringMap.cend()->second;
+        return std::string();   // documented fallback; dereferencing cend() was UB
 }
 
 /*static*/ LoggingOps& Logger::buildLoggingOpsObject() noexcept
 {
-    static std::unique_ptr<LoggingOps> pLoggingOps;
-    static auto initialize = true;  // First time TRUE and then always FALSE
-    while (initialize)
+    // Magic static: initialized exactly once, thread-safe (C++11 and later)
+    static const std::unique_ptr<LoggingOps> pLoggingOps = []() -> std::unique_ptr<LoggingOps>
+    {
+    std::unique_ptr<LoggingOps> pLoggingOps;
+    do
     {
 #if defined(FILE_LOGGING) // Is it going to be a file logging ops?
         std::ostringstream parser;
@@ -70,12 +72,11 @@ using namespace logger;
 #ifdef LOG_FILE_NAME
         parser << LOG_FILE_NAME;
         fileName = parser.str();
-        // Break out then and there if file logging is requested
-        // but none provided. We are not assuming
-        // any log file name on our own in any case
+#endif  // LOG_FILE_NAME
+        // File logging needs a file name; we never assume one. Checked outside the
+        // LOG_FILE_NAME guard so FILE_LOGGING without it is rejected too.
         if (fileName.empty())
             break;
-#endif  // LOG_FILE_NAME
 #ifdef FILE_SIZE    // Is the max log file size provided?
         fileSize = FILE_SIZE;
 #endif // FILE_SIZE
@@ -89,15 +90,40 @@ using namespace logger;
         parser << LOG_FILE_PATH;
         filePath = parser.str();
         std::filesystem::path path(filePath);
-        if (!std::filesystem::exists(path) && std::filesystem::is_directory(path))
-            break;  // Invalid file path not allowed
+        std::error_code ec;   // non-throwing: this runs inside a noexcept initializer
+        if (!std::filesystem::is_directory(path, ec))
+            break;  // Invalid file path not allowed (also false when it does not exist)
 #endif // LOG_FILE_PATH
-        pLoggingOps.reset(new FileOps(fileSize, fileName, filePath, fileExtn));
+        try
+        {
+            auto pFileOps = std::make_unique<FileOps>(fileSize, fileName, filePath, fileExtn);
+            // FileOps does not open the file up front, so check the resolved destination here:
+            // a LOG_FILE_NAME like "/missing-dir/app.log" must not bind the logger to a dead sink
+            const auto target = pFileOps->getFilePathObj();
+            std::error_code dirEc;
+            if (!std::filesystem::is_directory(target.parent_path(), dirEc))
+                break;
+            // The target itself must be (or become) a regular file we can append to; e.g. a directory named app.log is not
+            std::error_code fileEc;
+            if (std::filesystem::exists(target, fileEc) && !std::filesystem::is_regular_file(target, fileEc))
+                break;
+            if (!std::ofstream(target, std::ios::app | std::ios::binary).is_open())
+                break;
+            pLoggingOps = std::move(pFileOps);
+        }
+        catch (...)
+        {
+            break;  // a throw here would terminate the noexcept caller; use console logging instead
+        }
 #else   // Plain console logging it is
         pLoggingOps.reset(new ConsoleOps());
 #endif  // FILE_LOGGING
-        initialize = false; // By this time initialization is completed
-    }
+    } while (false);
+    // Invalid file-logging config used to leave this null and crash on dereference; fall back to console
+    if (!pLoggingOps)
+        pLoggingOps.reset(new ConsoleOps());
+    return pLoggingOps;
+    }();
     return *pLoggingOps;
 }
 
@@ -250,7 +276,19 @@ void Logger::constructLogMsgPrefixSecondPart()
 void Logger::vlog(const std::string_view formatStr, std::format_args args)
 {
     populatePrerequisitFileds();
-    auto logMsg = std::vformat(formatStr, args);
+    std::string logMsg;
+    try
+    {
+        logMsg = std::vformat(formatStr, args);
+    }
+    catch (const std::format_error& e)
+    {
+        // A malformed format string must not throw out of the logging API (and skip LOG_FATAL's abort).
+        // Written verbatim: the quote stripping below is only for successfully formatted macro output.
+        std::lock_guard<std::mutex> dataStreamLock(m_logStrmMtx);
+        m_logStream << formatStr << " [format error: " << e.what() << "]";
+        return;
+    }
     // Remove any "\"" from the formed string, might have been left, due to
     // MACRO expression expansion
     if (logMsg.find(DOUBLE_QUOTES) != std::string::npos)

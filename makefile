@@ -34,11 +34,27 @@ LIB_TYPE ?= static
 CXX := clang++
 
 CXXFLAGS := -std=c++20 -g -Wall -Wextra -Werror -Wno-unused-function -Wpedantic\
-			-I$(INC_DIR) $(addprefix -I, $(wildcard $(INC_DIR)/*))
+			-I$(INC_DIR)
 
 CXXFLAGS_TEST := -std=c++20 -g -Wall -Wextra -Werror -Wno-unused-function -Wpedantic\
-			-I$(INC_DIR) -I$(TEST_DIR) \
-			$(addprefix -I, $(wildcard $(INC_DIR)/*), $(wildcard $(TEST_DIR)/*))
+			-I$(INC_DIR) -I$(TEST_DIR)
+
+##Track header dependencies so header edits rebuild the objects that include them
+CXXFLAGS += -MMD -MP
+CXXFLAGS_TEST += -MMD -MP
+
+##Release objects get optimized; debug objects stay at -O0
+OPT_FLAGS := -O2
+
+##Homebrew (Apple Silicon: /opt/homebrew) is not in the default search path of Apple clang
+ifeq ($(shell uname -s), Darwin)
+BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+ifneq ($(BREW_PREFIX),)
+CXXFLAGS += -I$(BREW_PREFIX)/include
+CXXFLAGS_TEST += -I$(BREW_PREFIX)/include
+TEST_LIB_PATHS := -L$(BREW_PREFIX)/lib
+endif
+endif
 
 ##Static libraries building flags
 AR_FLAGS := ar
@@ -142,7 +158,7 @@ $(SHARED_DBG_TARGET) : $(DBG_OBJS) | $(LIB_DIR)
 ifeq ($(LIB_TYPE), static)	##.a aka static lib making in progress...
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 	@echo "Compiling release build...."
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $(OPT_FLAGS) $< -o $@
 	@echo "Compiling release build completed"
 
 $(OBJ_DIR)/%_d.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
@@ -153,7 +169,7 @@ $(OBJ_DIR)/%_d.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 else ifeq ($(LIB_TYPE), shared)	##.so file making in progress...
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 	@echo "Compiling release build...."
-	$(CXX) $(CXXFLAGS) -c $(FPIC_FLAG) $< -o $@
+	$(CXX) $(CXXFLAGS) -c $(FPIC_FLAG) $(OPT_FLAGS) $< -o $@
 	@echo "Compiling release build completed"
 
 $(OBJ_DIR)/%_d.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
@@ -164,19 +180,19 @@ endif
 
 ##Make tests with static lib
 ifeq ($(LIB_TYPE), static)
-$(TEST_TARGET) : $(TEST_OBJS) | $(BIN_DIR)
+$(TEST_TARGET) : $(TEST_OBJS) $(TARGET) | $(BIN_DIR)
 	@echo "Linking release test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ -lgtest -lpthread $(LD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LD_FLAGS) -o $@
 	@echo "Linking release test build completed"
 
-$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) | $(BIN_DIR)
+$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) $(DBG_TARGET) | $(BIN_DIR)
 	@echo "Linking debug test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ -lgtest -lpthread $(LDD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(DBG_TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LDD_FLAGS) -o $@
 	@echo "Linking debug test build completed"
 
 $(TEST_OBJ_DIR)/%.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
 	@echo "Compiling test release build...."
-	$(CXX) $(CXXFLAGS_TEST) -c $< -o $@
+	$(CXX) $(CXXFLAGS_TEST) -c $(OPT_FLAGS) $< -o $@
 	@echo "Compiling test release build completed"
 
 $(TEST_OBJ_DIR)/%_d.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
@@ -186,19 +202,19 @@ $(TEST_OBJ_DIR)/%_d.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
 
 ## Make tests with shared lib
 else ifeq ($(LIB_TYPE), shared)
-$(TEST_TARGET) : $(TEST_OBJS) | $(BIN_DIR)
+$(TEST_TARGET) : $(TEST_OBJS) $(SHARED_TARGET) | $(BIN_DIR)
 	@echo "Linking release test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ -lgtest -lpthread $(LD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LD_FLAGS) -o $@
 	@echo "Linking release test build completed"
 
-$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) | $(BIN_DIR)
+$(TEST_DBG_TARGET) : $(DBG_TEST_OBJS) $(SHARED_DBG_TARGET) | $(BIN_DIR)
 	@echo "Linking debug test build...."
-	$(CXX) $(CXXFLAGS_TEST) $^ -lgtest -lpthread $(LDD_FLAGS) -o $@
+	$(CXX) $(CXXFLAGS_TEST) $(DBG_TEST_OBJS) $(TEST_LIB_PATHS) -lgtest -lpthread $(LDD_FLAGS) -o $@
 	@echo "Linking debug test build completed"
 
 $(TEST_OBJ_DIR)/%.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
 	@echo "Compiling test release build...."
-	$(CXX) $(CXXFLAGS_TEST) -c $< -o $@
+	$(CXX) $(CXXFLAGS_TEST) -c $(OPT_FLAGS) $< -o $@
 	@echo "Compiling test release build completed"
 
 $(TEST_OBJ_DIR)/%_d.o: $(TEST_DIR)/%.cpp | $(TEST_OBJ_DIR)
@@ -228,5 +244,7 @@ clean:
 		$(TARGET) $(DBG_TARGET) \
 		$(TEST_TARGET) $(TEST_DBG_TARGET)
 	@echo "Cleaning solution completed"
+
+-include $(OBJS:.o=.d) $(DBG_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(DBG_TEST_OBJS:.o=.d)
 
 .PHONY: all release debug clean

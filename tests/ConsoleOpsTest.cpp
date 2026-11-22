@@ -1,7 +1,7 @@
 /*
  * MIT License
  * 
- * Copyright (c) 2024 Swarnendu Chandra
+ * Copyright (c) 2024 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -39,6 +39,12 @@
 #include "CommonFunc.hpp"
 
 #include <bitset>
+#include <atomic>
+#include <cstdlib>
+#include <chrono>
+#include <iostream>
+#include <streambuf>
+#include <thread>
 
 using namespace logger;
 
@@ -213,7 +219,7 @@ class ConsoleOpsTest : public CommonTestDataGenerator
                         consoleDataBin = static_cast<DataType>(std::bitset<32>(line).to_ulong());
                         break;
                     case 64:
-                        consoleDataBin = static_cast<DataType>(std::bitset<64>(line).to_ulong());
+                        consoleDataBin = static_cast<DataType>(std::bitset<64>(line).to_ullong());
                         break;
                     default:
                         ASSERT_TRUE(false);
@@ -374,3 +380,100 @@ TEST_F(ConsoleOpsTest, testWriteConsoleWith_8_Bytes_Hex_DataStream)
     testHexDataStream<uint64_t>(64);
 }
 
+
+namespace
+{
+    // streambuf whose first write fails; with cout.exceptions(badbit) that throws ios_base::failure
+    class FailOnceBuf : public std::streambuf
+    {
+        public:
+            explicit FailOnceBuf(std::streambuf* real) : m_real(real) {}
+        protected:
+            int_type overflow(int_type ch) override
+            {
+                if (!m_failed) { m_failed = true; return traits_type::eof(); }
+                return m_real->sputc(traits_type::to_char_type(ch));
+            }
+            std::streamsize xsputn(const char* s, std::streamsize n) override
+            {
+                if (!m_failed) { m_failed = true; return 0; }
+                return m_real->sputn(s, n);
+            }
+            int sync() override { return m_real->pubsync(); }
+        private:
+            std::streambuf* m_real;
+            bool m_failed = false;
+    };
+}
+
+namespace
+{
+    // Console sink whose recorded failures are inspected by the test and not written to the
+    // exception log file at destruction.
+    class QuietConsoleOps : public ConsoleOps
+    {
+        public:
+            ~QuietConsoleOps() override
+            {
+                stopWatcher();
+                std::scoped_lock<std::mutex> lock(m_excpMtx);
+                m_excpPtrVec.clear();
+            }
+            size_t failureCount() { std::scoped_lock<std::mutex> lock(m_excpMtx); return m_excpPtrVec.size(); }
+    };
+
+    // Child-process watchdog: if the code under test hangs, end the child with a distinct code
+    // instead of leaving a stuck thread in the test binary.
+    void startWatchdog()
+    {
+        std::thread([]() { std::this_thread::sleep_for(std::chrono::seconds(10)); std::_Exit(3); }).detach();
+    }
+}
+
+// Regression: a throwing console stream left the ConsoleOps busy flag set, so the next batch
+// (and every later flush(), including LOG_FATAL's) waited forever. Runs in a child process so a
+// hang ends that process (exit code 3), not the test binary.
+TEST(ConsoleOpsFailureTest, throwingStreamDoesNotWedgeLaterWrites)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(
+        {
+            startWatchdog();
+            FailOnceBuf failing(std::cout.rdbuf());
+            std::cout.rdbuf(&failing);
+            std::cout.exceptions(std::ios::badbit);
+            {
+                QuietConsoleOps console;
+                console.write(std::string_view("first-write-throws"));
+                console.flush();
+                std::cout.clear();
+                console.write(std::string_view("second-write-ok"));
+                console.flush();   // used to block forever here
+            }
+            std::_Exit(0);
+        },
+        ::testing::ExitedWithCode(0), "");
+}
+
+// With the default exception mask a failed console write only sets badbit; it must still be
+// reported, and a terminal record written with writeRecordNow() must report failure.
+TEST(ConsoleOpsFailureTest, silentStreamFailureIsReported)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(
+        {
+            startWatchdog();
+            FailOnceBuf failing(std::cout.rdbuf());
+            std::cout.rdbuf(&failing);   // exceptions stay disabled (default)
+            int code = 0;
+            {
+                QuietConsoleOps console;
+                if (console.writeRecordNow("terminal-record"))
+                    code |= 1;            // the failed write must not be reported as written
+                if (console.failureCount() == 0)
+                    code |= 2;            // and the failure must be recorded
+            }
+            std::_Exit(code == 0 ? 0 : 10 + code);
+        },
+        ::testing::ExitedWithCode(0), "");
+}

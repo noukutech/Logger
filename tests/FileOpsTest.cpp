@@ -36,6 +36,8 @@
 #include "CommonFunc.hpp"
 
 #include <bitset>
+#include <thread>
+#include <set>
 
 using namespace logger;
 
@@ -90,7 +92,7 @@ class FileOpsTests : public CommonTestDataGenerator
                         fileDataBin = static_cast<DataType>(std::bitset<32>(fileData).to_ulong());
                         break;
                     case 64:
-                        fileDataBin = static_cast<DataType>(std::bitset<64>(fileData).to_ulong());
+                        fileDataBin = static_cast<DataType>(std::bitset<64>(fileData).to_ullong());
                         break;
                     default:
                         ASSERT_TRUE(false);
@@ -225,12 +227,12 @@ TEST_F(FileOpsTests, testSetFileName)
     }
     fileName = getPathSeperator() + "tmp" + getPathSeperator() + "test" + getPathSeperator() + "TestFileSecond.log";
     expFileExtn = fileName.substr(fileName.find_last_of('.'));
-    expFilePath = fileName.substr(0, fileName.find_last_of('/') + 1);
+    expFilePath = fileName.substr(0, fileName.find_last_of(getPathSeperator()) + 1);
     {
         FileOps fileOps(maxFileSize);
         fileOps.setFileName(fileName);
         std::filesystem::path expFilePathObj(fileName);
-        auto expFileName = fileName.substr(fileName.find_last_of('/') + 1);
+        auto expFileName = fileName.substr(fileName.find_last_of(getPathSeperator()) + 1);
 
         ASSERT_EQ(fileOps.getFileName(), expFileName);
         EXPECT_EQ(fileOps.getFileExtension(), expFileExtn);
@@ -751,36 +753,278 @@ TEST_F(FileOpsTests, testGetFileSize)
 
 TEST_F(FileOpsTests, testFileLimitExceed)
 {
+    // Test-owned directory: never scan or delete unrelated files in the working directory
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_limit_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
     std::uintmax_t maxFileSize = 1024;
     std::uintmax_t maxTextSize = 3072;
-    auto fileName = generateRandomFileName();
-    auto expFilePath = std::filesystem::current_path().string() + getPathSeperator();
-    FileOps file(maxFileSize, fileName);
-    std::vector<std::string> dataQueue;
-    for (auto cnt = 0; cnt < 400; ++cnt)
     {
-        auto text = generateRandomText(maxTextSize);
-        file.append(text);
-        dataQueue.push_back(text);
-    }
+        FileOps file(maxFileSize, generateRandomFileName(), dir.string());
+        for (auto cnt = 0; cnt < 400; ++cnt)
+            file.append(generateRandomText(maxTextSize));
+        file.flush();
+        EXPECT_TRUE(file.getAllExceptions().empty());
+    }   // sink destroyed: every record is on disk before we inspect
     size_t cnt = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
     {
-        if (entry.path().extension() == ".txt" && entry.is_regular_file())
+        if (entry.is_regular_file())
             ++cnt;
     }
-    EXPECT_GT(cnt, static_cast<size_t>(1));
+    EXPECT_GT(cnt, static_cast<size_t>(1));   // rotation produced archives
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    EXPECT_FALSE(ec) << ec.message();
+}
+
+// Regression: records longer than one 4 KB buffer were split with one byte dropped per chunk.
+TEST_F(FileOpsTests, testLongRecordKeepsEveryByte)
+{
+    std::string longRecord;
+    for (size_t i = 0; i < 10000; ++i)
+        longRecord.push_back(static_cast<char>('a' + (i % 26)));
+
+    FileOps file(1024 * 1024, generateRandomFileName());
+    file.write(longRecord);
+    file.readFile();
+    auto fileContents = file.getFileContent();
+    std::string joined;
+    while (!fileContents.empty())
+    {
+        joined += fileContents.front();
+        fileContents.pop();
+    }
+    EXPECT_EQ(longRecord.size(), joined.size());
+    EXPECT_EQ(longRecord, joined);
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Regression: flush() only slept 200us, so a read right after writing could miss queued records.
+TEST_F(FileOpsTests, testFlushWaitsForQueuedRecords)
+{
+    constexpr size_t lines = 3000;
+    FileOps file(64 * 1024 * 1024, generateRandomFileName());
+    for (size_t i = 0; i < lines; ++i)
+        file.write("line_" + std::to_string(i));
+    file.flush();
+    file.readFile();
+    auto fileContents = file.getFileContent();
+    ASSERT_EQ(lines, fileContents.size());
+    for (size_t i = 0; i < lines; ++i)
+    {
+        EXPECT_EQ("line_" + std::to_string(i), fileContents.front());
+        fileContents.pop();
+    }
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Stress: concurrent writers must not lose, duplicate or corrupt records.
+TEST_F(FileOpsTests, testConcurrentWritersLoseNothing)
+{
+    constexpr int threads = 8;
+    constexpr int perThread = 250;
+    FileOps file(64 * 1024 * 1024, generateRandomFileName());
+    std::vector<std::thread> writers;
+    for (int t = 0; t < threads; ++t)
+    {
+        writers.emplace_back([&file, t]()
+        {
+            for (int i = 0; i < perThread; ++i)
+                file.write("T" + std::to_string(t) + "_" + std::to_string(i));
+        });
+    }
+    for (auto& w : writers)
+        w.join();
+
+    file.readFile();
+    auto fileContents = file.getFileContent();
+    ASSERT_EQ(static_cast<size_t>(threads * perThread), fileContents.size());
+    std::set<std::string> seen;
+    while (!fileContents.empty())
+    {
+        seen.insert(fileContents.front());
+        fileContents.pop();
+    }
+    EXPECT_EQ(static_cast<size_t>(threads * perThread), seen.size());
+    for (int t = 0; t < threads; ++t)
+        for (int i = 0; i < perThread; ++i)
+            EXPECT_TRUE(seen.count("T" + std::to_string(t) + "_" + std::to_string(i))) << t << "_" << i;
+    EXPECT_TRUE(file.getAllExceptions().empty());
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Regression: rotations within the same second reused one name and rename() overwrote the earlier rotated file.
+TEST_F(FileOpsTests, testFastRotationKeepsEveryRecord)
+{
+    const auto prefix = "rot_" + generateRandomText(8);
+    constexpr int records = 400;
+    {
+        FileOps file(512, prefix + ".log");
+        for (int i = 0; i < records; ++i)
+            file.write("record_" + std::to_string(i));
+        file.flush();
+        EXPECT_TRUE(file.getAllExceptions().empty());
+    }
+    size_t rotated = 0;
+    int lines = 0;
     for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
     {
-        if (entry.path().extension() == ".txt" && entry.is_regular_file())
-            ASSERT_TRUE(FileOps::removeFile(entry.path()));
+        if (entry.path().filename().string().rfind(prefix, 0) != 0)
+            continue;
+        ++rotated;
+        std::ifstream in(entry.path());
+        for (std::string line; std::getline(in, line);)
+            ++lines;
+        in.close();
+        ASSERT_TRUE(FileOps::removeFile(entry.path()));
     }
-    size_t newCnt = 0;
-    cnt = newCnt;
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
+    EXPECT_GT(rotated, static_cast<size_t>(2));
+    EXPECT_EQ(records, lines);
+}
+
+// Regression: isEmpty() on a missing file returned early with the busy flag still set, hanging the next write.
+TEST_F(FileOpsTests, testIsEmptyOnMissingFileThenWrite)
+{
+    FileOps file(1024 * 1024, generateRandomFileName());
+    EXPECT_FALSE(file.fileExists());
+    EXPECT_FALSE(file.isEmpty());
+    file.write("after_isEmpty");
+    file.readFile();
+    auto contents = file.getFileContent();
+    ASSERT_EQ(1u, contents.size());
+    EXPECT_EQ("after_isEmpty", contents.front());
+    ASSERT_TRUE(file.deleteFile());
+}
+
+// Regression: destruction must write every accepted record, including ones never flushed explicitly.
+TEST_F(FileOpsTests, testDestructorDrainsPendingRecords)
+{
+    const auto fileName = generateRandomFileName();
+    constexpr int records = 1000;   // spans several watcher batches
+    std::filesystem::path path;
     {
-        if (entry.path().extension() == ".txt" && entry.is_regular_file())
-            ++newCnt;
+        FileOps file(64 * 1024 * 1024, fileName);
+        for (int i = 0; i < records; ++i)
+            file.write("pending_" + std::to_string(i));
+        path = file.getFilePathObj();
     }
-    EXPECT_EQ(cnt, newCnt);
+    std::ifstream in(path);
+    int lines = 0;
+    for (std::string line; std::getline(in, line);)
+        ++lines;
+    in.close();
+    EXPECT_EQ(records, lines);
+    ASSERT_TRUE(FileOps::removeFile(path));
+}
+
+// Regression: writers racing on a missing/just-rotated file enqueued without the size check, and two
+// rotations could pick the same archive name. Every record must land exactly once, no file over the limit.
+TEST_F(FileOpsTests, testConcurrentRotationKeepsEveryRecordOnce)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_rot_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    constexpr std::uintmax_t maxFileSize = 256;
+    constexpr int threads = 4;
+    constexpr int perThread = 100;
+    {
+        FileOps file(maxFileSize, "rot.log", dir.string());
+        std::vector<std::thread> writers;
+        for (int t = 0; t < threads; ++t)
+        {
+            writers.emplace_back([&file, t]()
+            {
+                for (int i = 0; i < perThread; ++i)
+                    file.write("T" + std::to_string(t) + "_" + std::to_string(1000 + i));   // fixed-width ids
+            });
+        }
+        for (auto& w : writers)
+            w.join();
+        file.flush();
+        EXPECT_TRUE(file.getAllExceptions().empty());
+    }
+    std::multiset<std::string> ids;
+    size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        ++files;
+        EXPECT_LE(std::filesystem::file_size(entry.path()), maxFileSize) << entry.path();
+        std::ifstream in(entry.path());
+        for (std::string line; std::getline(in, line);)
+            ids.insert(line);
+    }
+    EXPECT_GT(files, 2u);
+    ASSERT_EQ(static_cast<size_t>(threads * perThread), ids.size());
+    for (int t = 0; t < threads; ++t)
+        for (int i = 0; i < perThread; ++i)
+            EXPECT_EQ(1u, ids.count("T" + std::to_string(t) + "_" + std::to_string(1000 + i)));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+#ifndef _WIN32
+// Regression: a POSIX directory whose name ends in '\' was treated as already separated, so the
+// file landed next to it ("dir\name.log") instead of inside it.
+TEST_F(FileOpsTests, testPosixDirectoryEndingInBackslash)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_bs_" + generateRandomText(8) + "\\");
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    {
+        FileOps file(1024 * 1024, "inside.log", dir.string());
+        EXPECT_EQ(dir, file.getFilePathObj().parent_path());
+        file.write("x");
+    }
+    EXPECT_TRUE(std::filesystem::exists(dir / "inside.log"));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+#endif
+
+// Regression: rotation counted payload bytes only, but every 4096-byte chunk is written with its own
+// terminator, so a multi-chunk record could push the file past the limit.
+TEST_F(FileOpsTests, testRotationCountsChunkTerminators)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_chunk_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    // On disk: "0123456789\n" = 11 bytes, then a 4097-byte record = 2 chunks = 4099 bytes. Together 4110.
+    // With a 4109 limit the old check (11 + 4097 = 4108 < 4109) skipped rotation and produced a 4110-byte file.
+    constexpr std::uintmax_t maxFileSize = 4109;
+    {
+        FileOps file(maxFileSize, "chunk.log", dir.string());
+        file.write("0123456789");
+        file.write(std::string(4097, 'y'));
+        file.flush();
+    }
+    size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        ++files;
+        EXPECT_LT(std::filesystem::file_size(entry.path()), maxFileSize) << entry.path();
+    }
+    EXPECT_EQ(2u, files);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+// A record that fits exactly (payload + per-chunk terminators == limit) must stay in the current file.
+TEST_F(FileOpsTests, testRotationExactFitDoesNotRotate)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_fit_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    // "0123456789\n" = 11 bytes + 4097-byte record as 2 chunks = 4099 bytes -> 4110 total == limit
+    constexpr std::uintmax_t maxFileSize = 4110;
+    {
+        FileOps file(maxFileSize, "fit.log", dir.string());
+        file.write("0123456789");
+        file.write(std::string(4097, 'y'));
+        file.flush();
+    }
+    size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        ++files;
+        EXPECT_EQ(maxFileSize, std::filesystem::file_size(entry.path())) << entry.path();
+    }
+    EXPECT_EQ(1u, files);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
