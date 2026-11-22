@@ -19,7 +19,7 @@ A lightweight, efficient, and easy-to-use logging utility library for C++ projec
 
 ## Overview
 
-This Logger library offers simple logging capabilities, including multiple log levels, formatted output, and timestamping. It is designed to be lightweight, performant, and straightforward to integrate into any C++ project (min version C++-20) without complicated setup or heavy dependencies. Supported platforms (64-bit only): macOS (arm64, x86_64), Linux (x86_64, arm64) and Windows (x86_64, via MinGW-w64 under MSYS2 UCRT64; MSVC is not supported because the build is a GNU makefile). See [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md) for the verification evidence.
+This Logger library offers simple logging capabilities, including multiple log levels, formatted output, and timestamping. It is designed to be lightweight, performant, and straightforward to integrate into any C++ project (min version C++-20) without complicated setup or heavy dependencies. Supported platforms (64-bit only): macOS (arm64, x86_64), Linux (x86_64, arm64) and Windows (x86_64, via MinGW-w64 under MSYS2 UCRT64; MSVC is not supported because the build is a GNU makefile).
 
 ## Features
 
