@@ -499,16 +499,35 @@ namespace logger
      * @param [in] args Additional arguments to be formatted into the log message.
      */
     /**
-     * @brief Last-resort report for fatal/assert records.
+     * @brief Flush, then report a fatal/assert record on stderr only if *this* flush failed.
      *
      * flush() returns once the watcher has *attempted* to write every queued record. If the sink
-     * recorded a failure (e.g. disk full), the record may not be on disk, and abort() skips the
-     * destructor that would print the stored error. Write the record to stderr so it is not lost.
+     * recorded a new failure during this flush (e.g. disk full), the record may not be on disk, and
+     * abort() skips the destructor that would print the stored error, so write it to stderr instead.
+     * Failures recorded before the record was enqueued (@p failuresBefore) do not trigger the report.
+     * Control characters are escaped so the record cannot inject terminal escape sequences.
      */
-    inline void reportIfSinkFailed(const std::string& record) noexcept
+    inline void flushAndReportIfSinkFailed(const std::string& record, const std::size_t failuresBefore) noexcept
     {
-        if (loggingOps.hasRaisedExceptions())
-            std::fprintf(stderr, "%s [logger: sink reported a write failure; record may not be persisted]\n", record.c_str());
+        loggingOps.flush();
+        if (loggingOps.raisedExceptionCount() <= failuresBefore)
+            return;
+        std::string safe;
+        safe.reserve(record.size());
+        for (const unsigned char c : record)
+        {
+            if (c < 0x20 || c == 0x7f)
+            {
+                char hex[5];
+                std::snprintf(hex, sizeof(hex), "\\x%02x", c);
+                safe += hex;
+            }
+            else
+            {
+                safe += static_cast<char>(c);
+            }
+        }
+        std::fprintf(stderr, "%s [logger: sink reported a write failure; record may not be persisted]\n", safe.c_str());
     }
 
     template<typename ...Args>
@@ -530,9 +549,11 @@ namespace logger
         try
         {
             std::string record;
+            std::size_t failuresBefore = 0;
             {
                 // Condition and record under one lock, so a concurrent log call cannot clear it or take it
                 std::lock_guard<std::mutex> raceLock(raceMtx);
+                failuresBefore = loggingOps.raisedExceptionCount();
                 loggerObj.setAssertCondition(std::string(cond));
                 logMsgLocked(fileName,
                              funcName,
@@ -545,8 +566,7 @@ namespace logger
                 record = loggerObj.getLogStream().str();
             }
             // Lock released first: atexit handlers may log, and abort/exit skip destructors so flush now
-            loggingOps.flush();
-            reportIfSinkFailed(record);
+            flushAndReportIfSinkFailed(record, failuresBefore);
         }
         catch (...) {}
         if (exitGracefuly)
@@ -587,8 +607,10 @@ namespace logger
         try
         {
             std::string record;
+            std::size_t failuresBefore = 0;
             {
                 std::lock_guard<std::mutex> raceLock(raceMtx);
+                failuresBefore = loggingOps.raisedExceptionCount();
                 logMsgLocked(fileName,
                              funcName,
                              FORWARD_ANGLE,
@@ -599,8 +621,8 @@ namespace logger
                              args...);
                 record = loggerObj.getLogStream().str();
             }
-            loggingOps.flush();   // abort skips destructors; without this a file sink loses the fatal record
-            reportIfSinkFailed(record);
+            // abort skips destructors; without this flush a file sink loses the fatal record
+            flushAndReportIfSinkFailed(record, failuresBefore);
         }
         catch (...) {}
         std::abort();

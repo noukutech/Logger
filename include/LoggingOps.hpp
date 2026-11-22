@@ -113,11 +113,11 @@ namespace logger
              * only one thread can add an exception at a time.
              */
             /**
-             * @brief Whether any write/operation failure has been recorded so far.
-             * Thread safe, unlike getAllExceptions(); used by the fatal/assert paths to
-             * detect that a record may not have reached its destination.
+             * @brief Number of write/operation failures recorded so far.
+             * Thread safe, unlike getAllExceptions(). The fatal/assert paths compare it before and
+             * after their own flush to tell whether *their* record may not have been persisted.
              */
-            inline bool hasRaisedExceptions() noexcept                                      { std::scoped_lock<std::mutex> lock(m_excpMtx); return !m_excpPtrVec.empty(); }
+            inline std::size_t raisedExceptionCount() noexcept                              { std::scoped_lock<std::mutex> lock(m_excpMtx); return m_excpPtrVec.size(); }
 
             inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 

@@ -43,16 +43,31 @@ for kind in FATAL FATAL_BADFMT FATAL_JSONFMT ASSERT ASSERT_MSG ASSERT_ABORT ATEX
 done
 # Sink failure: the file opens but every write fails (file-size limit 0, SIGXFSZ ignored).
 # The fatal record cannot reach disk, so it must be reported on stderr before abort().
-printf '#include "LOGGER_MACROS.hpp"\nusing namespace logger;\nint main() { LOG_FATAL("fatal_sinkfail-record"); return 0; }\n' > "$TMP/SINKFAIL.cpp"
+# The record carries an ESC byte: it must reach stderr escaped, never as a raw terminal escape
+printf '#include "LOGGER_MACROS.hpp"\nusing namespace logger;\nint main() { LOG_FATAL("fatal_sinkfail-record \\x1b[31mred"); return 0; }\n' > "$TMP/SINKFAIL.cpp"
 if $CXX -std=c++20 -Iinclude "${EXTRA[@]}" -DFILE_LOGGING "-DLOG_FILE_NAME=\"$TMP/SINKFAIL.log\"" src/*.cpp "$TMP/SINKFAIL.cpp" -o "$TMP/SINKFAIL"; then
   # stderr goes through a pipe to a reader outside the limit (a capture file would hit the limit too)
   (cd "$TMP" && trap '' XFSZ && ulimit -f 0 && perl -e 'alarm 30; exec @ARGV' ./SINKFAIL 2>&1 >/dev/null) | cat > "$TMP/SINKFAIL.err"; rc=${PIPESTATUS[0]}
-  if [ "$rc" -eq 134 ] && grep -q 'fatal_sinkfail-record.*write failure' "$TMP/SINKFAIL.err"; then
-    echo "FATAL_SINKFAIL: ok (exit=$rc, record reported on stderr)"
+  if [ "$rc" -eq 134 ] && grep -q 'fatal_sinkfail-record.*write failure' "$TMP/SINKFAIL.err" \
+     && grep -qF '\x1b[31m' "$TMP/SINKFAIL.err" && ! LC_ALL=C grep -q "$(printf '\033')" "$TMP/SINKFAIL.err"; then
+    echo "FATAL_SINKFAIL: ok (exit=$rc, record reported on stderr, control chars escaped)"
   else
-    echo "FATAL_SINKFAIL: FAIL (exit=$rc, expected 134 and the record on stderr)"; fail=1
+    echo "FATAL_SINKFAIL: FAIL (exit=$rc, expected 134 and the escaped record on stderr)"; fail=1
   fi
 else
   echo "FATAL_SINKFAIL: build failed"; fail=1
+fi
+# An unrelated failure recorded *before* the fatal record must not echo the record to stderr:
+# the fatal record itself is written fine, so it belongs only in the log file.
+printf '#include "LOGGER_MACROS.hpp"\n#include <stdexcept>\nusing namespace logger;\nint main() { loggingOps.addRaisedException(std::make_exception_ptr(std::runtime_error("earlier"))); LOG_FATAL("fatal_priorfail-record"); return 0; }\n' > "$TMP/PRIORFAIL.cpp"
+if $CXX -std=c++20 -Iinclude "${EXTRA[@]}" -DFILE_LOGGING "-DLOG_FILE_NAME=\"$TMP/PRIORFAIL.log\"" src/*.cpp "$TMP/PRIORFAIL.cpp" -o "$TMP/PRIORFAIL"; then
+  (cd "$TMP" && perl -e 'alarm 30; exec @ARGV' ./PRIORFAIL >/dev/null 2>"$TMP/PRIORFAIL.err"); rc=$?
+  if [ "$rc" -eq 134 ] && grep -q 'fatal_priorfail-record' "$TMP/PRIORFAIL.log" && ! grep -q 'fatal_priorfail-record' "$TMP/PRIORFAIL.err"; then
+    echo "FATAL_PRIORFAIL: ok (exit=$rc, record in file only, not echoed to stderr)"
+  else
+    echo "FATAL_PRIORFAIL: FAIL (exit=$rc, expected 134, record in file, nothing on stderr)"; fail=1
+  fi
+else
+  echo "FATAL_PRIORFAIL: build failed"; fail=1
 fi
 exit $fail
