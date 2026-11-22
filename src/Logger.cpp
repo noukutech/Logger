@@ -283,8 +283,11 @@ void Logger::vlog(const std::string_view formatStr, std::format_args args)
     }
     catch (const std::format_error& e)
     {
-        // A malformed format string must not throw out of the logging API (and skip LOG_FATAL's abort)
-        logMsg = std::string(formatStr) + " [format error: " + e.what() + "]";
+        // A malformed format string must not throw out of the logging API (and skip LOG_FATAL's abort).
+        // Written verbatim: the quote stripping below is only for successfully formatted macro output.
+        std::lock_guard<std::mutex> dataStreamLock(m_logStrmMtx);
+        m_logStream << formatStr << " [format error: " << e.what() << "]";
+        return;
     }
     // Remove any "\"" from the formed string, might have been left, due to
     // MACRO expression expansion

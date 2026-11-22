@@ -9,11 +9,13 @@ trap 'rm -rf "$TMP"' EXIT
 EXTRA=()
 if [ "$(uname -s)" = Darwin ] && command -v brew >/dev/null; then EXTRA=(-I"$(brew --prefix)/include"); fi
 fail=0
-for kind in FATAL FATAL_BADFMT ASSERT ASSERT_MSG ASSERT_ABORT ATEXIT_LOG; do
+for kind in FATAL FATAL_BADFMT FATAL_JSONFMT ASSERT ASSERT_MSG ASSERT_ABORT ATEXIT_LOG; do
   case $kind in
     FATAL)  body='LOG_FATAL("fatal-record-{}", 1);' ;;
     # malformed runtime format: logging must not throw past the abort
     FATAL_BADFMT) body='LOG_FATAL("fatal_badfmt-record {");' ;;
+    # quoted malformed format: raw text and diagnostic must both reach the file
+    FATAL_JSONFMT) body='LOG_FATAL(R"({"fatal_jsonfmt-record": {})");' ;;
     ASSERT)     body='LOG_ASSERT(1 == 2);' ;;   # logs the condition text, not a custom message
     ASSERT_MSG) body='LOG_ASSERT_MSG(1 == 2, "assert_msg-record-{}", 2);' ;;
     # abort() path: skips static destructors, so only the explicit flush can save the record
@@ -30,8 +32,9 @@ for kind in FATAL FATAL_BADFMT ASSERT ASSERT_MSG ASSERT_ABORT ATEXIT_LOG; do
   [ "$kind" = ASSERT ] && want='CONDITION: 1 == 2'
   # The exit-path handler runs after the assertion; reaching it proves no deadlock
   [ "$kind" = ATEXIT_LOG ] && want='atexit_log-record'
+  [ "$kind" = FATAL_JSONFMT ] && want='"fatal_jsonfmt-record": {.*format error'
   # Exact status: abort() paths must abort (134 = SIGABRT), graceful paths must exit(1)
-  case $kind in FATAL|FATAL_BADFMT|ASSERT_ABORT) expect=134 ;; *) expect=1 ;; esac
+  case $kind in FATAL|FATAL_BADFMT|FATAL_JSONFMT|ASSERT_ABORT) expect=134 ;; *) expect=1 ;; esac
   if [ "$rc" -eq "$expect" ] && grep -q "$want" "$TMP/$kind.log" 2>/dev/null; then
     echo "$kind: ok (exit=$rc, record on disk)"
   else

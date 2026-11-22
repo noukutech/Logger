@@ -434,3 +434,14 @@ TEST(LoggerConversionTest, malformedFormatDoesNotThrow)
     EXPECT_NO_THROW(logger.log("broken {", 1));
     EXPECT_NE(std::string::npos, logger.getLogStream().str().find("format error"));
 }
+
+// Regression: the malformed-format fallback went through quote stripping, so a JSON-style format
+// lost both the raw text and the diagnostic.
+TEST(LoggerConversionTest, malformedQuotedFormatKeptVerbatim)
+{
+    Logger logger("%Y");
+    EXPECT_NO_THROW(logger.log(R"({"event": {})", 1));
+    const auto out = logger.getLogStream().str();
+    EXPECT_NE(std::string::npos, out.find(R"({"event": {})")) << out;
+    EXPECT_NE(std::string::npos, out.find("[format error:")) << out;
+}
