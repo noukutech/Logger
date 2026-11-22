@@ -99,8 +99,15 @@ using namespace logger;
             auto pFileOps = std::make_unique<FileOps>(fileSize, fileName, filePath, fileExtn);
             // FileOps does not open the file up front, so check the resolved destination here:
             // a LOG_FILE_NAME like "/missing-dir/app.log" must not bind the logger to a dead sink
+            const auto target = pFileOps->getFilePathObj();
             std::error_code dirEc;
-            if (!std::filesystem::is_directory(pFileOps->getFilePathObj().parent_path(), dirEc))
+            if (!std::filesystem::is_directory(target.parent_path(), dirEc))
+                break;
+            // The target itself must be (or become) a regular file we can append to; e.g. a directory named app.log is not
+            std::error_code fileEc;
+            if (std::filesystem::exists(target, fileEc) && !std::filesystem::is_regular_file(target, fileEc))
+                break;
+            if (!std::ofstream(target, std::ios::app | std::ios::binary).is_open())
                 break;
             pLoggingOps = std::move(pFileOps);
         }

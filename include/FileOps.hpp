@@ -308,7 +308,7 @@ namespace logger
              *               The queue is thread safe and can be accessed by multiple
              *               threads at the same time.
              */
-            inline DataQ getFileContent() const                             { return m_FileContent;                             }
+            inline DataQ getFileContent() const                             { std::scoped_lock<std::mutex> lock(m_FileOpsMutex); return m_FileContent; }
             /**
              * @brief Checks if the file path is empty or not
              *
@@ -446,7 +446,7 @@ namespace logger
             DataQ m_FileContent;
             std::filesystem::path m_FilePathObj;
             std::uintmax_t m_MaxFileSize;
-            std::mutex m_FileOpsMutex;   // sole guard for file I/O; RAII locks release it on every exit, including throws
+            mutable std::mutex m_FileOpsMutex;   // sole guard for file I/O; RAII locks release it on every exit, including throws
             std::mutex m_rotateMtx;   // serializes the size-check/rename/re-create rotation step
     };
 };  //logger namespace

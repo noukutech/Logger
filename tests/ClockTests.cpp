@@ -38,6 +38,7 @@
 #include <sstream>
 #include <thread>
 #include <future>
+#include <atomic>
 
 using namespace logger;
 
@@ -238,13 +239,14 @@ TEST_F(ClockTests, testStop)
 
 TEST_F(ClockTests, testGetElapsedTime)
 {
-    // sleep_for guarantees a minimum; the upper bounds only catch wrong units, since shared CI runners can oversleep a lot
+    // Lower bounds allow 5%: on Windows sleep_for and steady_clock use different timer sources, so a
+    // 1 s sleep can measure 0.9999 s. Upper bounds only catch wrong units; shared CI runners oversleep a lot.
     {
         clock.start();
         std::this_thread::sleep_for(std::chrono::seconds(1));
         clock.stop();
         auto elapsedTime = clock.getElapsedTime(TimeUnits::SECONDS);
-        EXPECT_GE(elapsedTime, 1.0);
+        EXPECT_GE(elapsedTime, 0.95);
         EXPECT_LT(elapsedTime, 5.0);
     }
     {
@@ -252,7 +254,7 @@ TEST_F(ClockTests, testGetElapsedTime)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         clock.stop();
         auto elapsedTime = clock.getElapsedTime(TimeUnits::MILLISECONDS);
-        EXPECT_GE(elapsedTime, 10.0);
+        EXPECT_GE(elapsedTime, 9.5);
         EXPECT_LT(elapsedTime, 1000.0);   // a seconds/microseconds mix-up would be off by 1000x
     }
 }
@@ -337,4 +339,30 @@ TEST(ClockRegressionTests, concurrentFormattingIsConsistent)
     const auto yearAfter = clock.getLocalTimeStr("%Y");
     for (const auto& year : results)
         EXPECT_TRUE(year == yearBefore || year == yearAfter) << year;
+}
+
+// Regression: start()/stop() checked state outside the mutex; competing callers raced on the thread id (TSan).
+TEST(ClockRegressionTests, competingStartStopCallersAreSafe)
+{
+    Clock clock;
+    std::atomic<bool> go{false};
+    std::vector<std::thread> workers;
+    for (int t = 0; t < 8; ++t)
+    {
+        workers.emplace_back([&]()
+        {
+            while (!go) {}
+            for (int i = 0; i < 2000; ++i)
+            {
+                clock.start();
+                clock.stop();
+                (void)clock.getElapsedTime(TimeUnits::NANOSECONDS);
+            }
+        });
+    }
+    go = true;
+    for (auto& w : workers)
+        w.join();
+    // Whoever started last may still own it; stop from all threads is a no-op for non-owners
+    SUCCEED();
 }

@@ -960,3 +960,47 @@ TEST_F(FileOpsTests, testConcurrentRotationKeepsEveryRecordOnce)
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+#ifndef _WIN32
+// Regression: a POSIX directory whose name ends in '\' was treated as already separated, so the
+// file landed next to it ("dir\name.log") instead of inside it.
+TEST_F(FileOpsTests, testPosixDirectoryEndingInBackslash)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_bs_" + generateRandomText(8) + "\\");
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    {
+        FileOps file(1024 * 1024, "inside.log", dir.string());
+        EXPECT_EQ(dir, file.getFilePathObj().parent_path());
+        file.write("x");
+    }
+    EXPECT_TRUE(std::filesystem::exists(dir / "inside.log"));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+#endif
+
+// Regression: rotation counted payload bytes only, but every 4096-byte chunk is written with its own
+// terminator, so a multi-chunk record could push the file past the limit.
+TEST_F(FileOpsTests, testRotationCountsChunkTerminators)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_chunk_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    // On disk: "0123456789\n" = 11 bytes, then a 4097-byte record = 2 chunks = 4099 bytes. Together 4110.
+    // With a 4109 limit the old check (11 + 4097 = 4108 < 4109) skipped rotation and produced a 4110-byte file.
+    constexpr std::uintmax_t maxFileSize = 4109;
+    {
+        FileOps file(maxFileSize, "chunk.log", dir.string());
+        file.write("0123456789");
+        file.write(std::string(4097, 'y'));
+        file.flush();
+    }
+    size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        ++files;
+        EXPECT_LT(std::filesystem::file_size(entry.path()), maxFileSize) << entry.path();
+    }
+    EXPECT_EQ(2u, files);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}

@@ -248,7 +248,11 @@ void FileOps::populateFilePathObj(const StdTupple& fileDetails)
         }
         else //If the file path doesn't end with a separator, then add it
         {
+#if defined(_WIN32)
             if (m_FilePath.back() != '/' && m_FilePath.back() != '\\')
+#else
+            if (m_FilePath.back() != '/')   // a trailing '\\' is part of the directory name on POSIX
+#endif
             {
                 m_FilePath += getSeparator();
             }
@@ -395,9 +399,8 @@ void FileOps::readFile()
     // and wait for it to be processed before reading the file
     flush();
 
-    DataQ().swap(m_FileContent); // Clear the file content queue
-
     std::unique_lock<std::mutex> fileLock(m_FileOpsMutex);
+    DataQ().swap(m_FileContent); // Clear under the lock: a concurrent readFile()/getFileContent() must not see it half-filled
 
     if (std::filesystem::exists(m_FilePathObj))
     {
@@ -471,7 +474,9 @@ void FileOps::writeDataTo(const std::string_view data)
             flush(); //Flush the data whatever in the queue waiting to be written
             // Now get the file size
             auto currFileSize = getFileSize();
-            if ((currFileSize + data.size()) >= m_MaxFileSize)
+            // Each 4096-byte chunk is written as its own line, so count one terminator per chunk
+            const auto chunks = (data.size() + bufferSize - 2) / (bufferSize - 1);
+            if ((currFileSize + data.size() + chunks) >= m_MaxFileSize)
             {
                 Clock clock;
                 auto currentTimeStr = clock.getLocalTimeStr("%d%m%Y_%H%M%S");

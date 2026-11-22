@@ -49,7 +49,7 @@
 
 namespace logger
 {
-    using TimePoint = std::chrono::time_point<std::chrono::steady_clock>;   // monotonic: high_resolution_clock is system_clock on libstdc++/MinGW
+    using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
     /**
      * @enum TimeUnits
@@ -169,11 +169,11 @@ namespace logger
             /**
              * @brief The start time of the timer.
              */
-            TimePoint m_startTime;
+            std::chrono::steady_clock::time_point m_startTime;   // monotonic; high_resolution_clock is system_clock on libstdc++/MinGW
             /**
              * @brief The end time of the timer.
              */
-            TimePoint m_endTime;
+            std::chrono::steady_clock::time_point m_endTime;
             /**
              * @brief The format for time strings.
              */
@@ -189,7 +189,7 @@ namespace logger
             /**
              * @brief A mutex for thread safety.
              */
-            std::mutex m_mutex;
+            mutable std::mutex m_mutex;   // guards m_startTime/m_endTime/m_threadId and the running-state transitions
             /**
              * @brief A condition variable for thread safety.
              */

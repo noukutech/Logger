@@ -74,21 +74,20 @@ namespace
 
 void Clock::start()
 {
+    // Check and transition under one lock: two starters, or start vs stop, must not interleave
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_isRunning)
         return;
-
-    std::lock_guard<std::mutex> lock(m_mutex);
     m_startTime = std::chrono::steady_clock::now();
-    m_isRunning = true;
     m_threadId = std::this_thread::get_id();
+    m_isRunning = true;   // publish last, after the thread id it guards
 }
 
 void Clock::stop()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (!m_isRunning || (m_threadId != std::this_thread::get_id()))
         return;
-    
-    std::lock_guard<std::mutex> lock(m_mutex);
     m_endTime = std::chrono::steady_clock::now();
     m_isRunning = false;
     m_condition.notify_one();
@@ -96,6 +95,7 @@ void Clock::stop()
 
 double Clock::getElapsedTime(const TimeUnits& units)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_isRunning || (m_threadId != std::this_thread::get_id()))
         return -1.0;
 

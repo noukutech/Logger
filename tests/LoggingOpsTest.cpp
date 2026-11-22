@@ -10,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -49,8 +50,37 @@ namespace
     };
 }
 
+namespace
+{
+    // Sink whose writer blocks until released, to observe flush() while a batch is in flight
+    class GatedSink : public LoggingOps
+    {
+        public:
+            GatedSink() { m_watcher = std::thread([this]() { keepWatchAndPull(); }); }
+            ~GatedSink() override { release(); stopWatcher(); }
+            const std::string getClassId() const override { return "GatedSink"; }
+            void release() { std::call_once(m_released, [this]() { m_gate.set_value(); }); }
+            std::atomic<size_t> written{0};
+            std::atomic<bool> writerEntered{false};
+
+        protected:
+            void writeDataTo(const std::string_view data) override { push(data); }
+            void writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&) override
+            {
+                writerEntered = true;
+                m_gateFuture.wait();
+                written += dataQueue.size();
+            }
+
+        private:
+            std::promise<void> m_gate;
+            std::shared_future<void> m_gateFuture = m_gate.get_future().share();
+            std::once_flag m_released;
+    };
+}
+
 // Regression: shutdown accepted records until the queue happened to be empty, so steady
-// producers could keep stopWatcher() from ever joining; flush() waiters must also be released.
+// producers could keep stopWatcher() from ever joining.
 TEST(LoggingOpsShutdownTest, shutdownCompletesUnderLoadAndAccountsForEveryRecord)
 {
     CountingSink sink;
@@ -71,20 +101,47 @@ TEST(LoggingOpsShutdownTest, shutdownCompletesUnderLoadAndAccountsForEveryRecord
     std::thread flusher([&]() { while (!stop) sink.flush(); });
 
     std::this_thread::sleep_for(50ms);
-    auto done = std::async(std::launch::async, [&]() { sink.shutdown(); });
-    ASSERT_EQ(std::future_status::ready, done.wait_for(10s)) << "stopWatcher() did not return under load";
+    std::promise<void> shutDown;
+    auto shutDownFuture = shutDown.get_future();
+    std::thread stopper([&]() { sink.shutdown(); shutDown.set_value(); });
+    // Producers keep running while we wait: this is exactly the load that used to starve shutdown
+    const bool returnedUnderLoad = shutDownFuture.wait_for(10s) == std::future_status::ready;
 
+    // Clean up before asserting, so a failure reports instead of hanging (a real deadlock is bounded by the test runner)
     stop = true;
     for (auto& p : producers)
         p.join();
     flusher.join();
+    stopper.join();
 
+    EXPECT_TRUE(returnedUnderLoad) << "stopWatcher() did not return while producers were running";
     size_t total = 0;
     for (const auto a : attempts)
         total += a;
     // Every write was either written by the watcher or reported as rejected; none silently lost
     EXPECT_EQ(total, sink.written.load() + sink.getAllExceptions().size());
     EXPECT_GT(sink.written.load(), 0u);
+}
+
+// flush() must stay blocked until the batch holding its records is actually written.
+TEST(LoggingOpsShutdownTest, flushWaitsForInFlightBatch)
+{
+    GatedSink sink;
+    for (int i = 0; i < 10; ++i)
+        sink.write(std::string_view("pending"));
+    std::atomic<bool> flushed{false};
+    std::thread flusher([&]() { sink.flush(); flushed = true; });
+
+    for (int i = 0; i < 2000 && !sink.writerEntered; ++i)
+        std::this_thread::sleep_for(1ms);
+    ASSERT_TRUE(sink.writerEntered) << "watcher never picked up the batch";
+    std::this_thread::sleep_for(100ms);
+    EXPECT_FALSE(flushed) << "flush() returned before its batch was written";
+
+    sink.release();
+    flusher.join();
+    EXPECT_TRUE(flushed);
+    EXPECT_EQ(10u, sink.written.load());
 }
 
 #ifndef _WIN32  // RLIMIT_FSIZE is POSIX; it lets the open succeed and makes later writes fail (EFBIG)
