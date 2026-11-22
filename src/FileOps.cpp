@@ -476,7 +476,7 @@ void FileOps::writeDataTo(const std::string_view data)
             auto currFileSize = getFileSize();
             // Each 4096-byte chunk is written as its own line, so count one terminator per chunk
             const auto chunks = (data.size() + bufferSize - 2) / (bufferSize - 1);
-            if ((currFileSize + data.size() + chunks) >= m_MaxFileSize)
+            if ((currFileSize + data.size() + chunks) > m_MaxFileSize)   // an exact fit stays in the current file
             {
                 Clock clock;
                 auto currentTimeStr = clock.getLocalTimeStr("%d%m%Y_%H%M%S");

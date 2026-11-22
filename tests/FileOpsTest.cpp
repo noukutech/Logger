@@ -1004,3 +1004,27 @@ TEST_F(FileOpsTests, testRotationCountsChunkTerminators)
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+// A record that fits exactly (payload + per-chunk terminators == limit) must stay in the current file.
+TEST_F(FileOpsTests, testRotationExactFitDoesNotRotate)
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("logger_fit_" + generateRandomText(8));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    // "0123456789\n" = 11 bytes + 4097-byte record as 2 chunks = 4099 bytes -> 4110 total == limit
+    constexpr std::uintmax_t maxFileSize = 4110;
+    {
+        FileOps file(maxFileSize, "fit.log", dir.string());
+        file.write("0123456789");
+        file.write(std::string(4097, 'y'));
+        file.flush();
+    }
+    size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        ++files;
+        EXPECT_EQ(maxFileSize, std::filesystem::file_size(entry.path())) << entry.path();
+    }
+    EXPECT_EQ(1u, files);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}

@@ -58,6 +58,7 @@ namespace
         public:
             GatedSink() { m_watcher = std::thread([this]() { keepWatchAndPull(); }); }
             ~GatedSink() override { release(); stopWatcher(); }
+            void shutdown() { stopWatcher(); }
             const std::string getClassId() const override { return "GatedSink"; }
             void release() { std::call_once(m_released, [this]() { m_gate.set_value(); }); }
             std::atomic<size_t> written{0};
@@ -123,6 +124,16 @@ TEST(LoggingOpsShutdownTest, shutdownCompletesUnderLoadAndAccountsForEveryRecord
     EXPECT_GT(sink.written.load(), 0u);
 }
 
+// Waits up to `limit` for `cond`; returns whether it became true
+template<typename Cond>
+static bool waitFor(Cond cond, std::chrono::milliseconds limit)
+{
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!cond() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    return cond();
+}
+
 // flush() must stay blocked until the batch holding its records is actually written.
 TEST(LoggingOpsShutdownTest, flushWaitsForInFlightBatch)
 {
@@ -132,15 +143,39 @@ TEST(LoggingOpsShutdownTest, flushWaitsForInFlightBatch)
     std::atomic<bool> flushed{false};
     std::thread flusher([&]() { sink.flush(); flushed = true; });
 
-    for (int i = 0; i < 2000 && !sink.writerEntered; ++i)
-        std::this_thread::sleep_for(1ms);
-    ASSERT_TRUE(sink.writerEntered) << "watcher never picked up the batch";
+    const bool entered = waitFor([&]() { return sink.writerEntered.load(); }, 2000ms);
     std::this_thread::sleep_for(100ms);
-    EXPECT_FALSE(flushed) << "flush() returned before its batch was written";
+    const bool flushedWhileGated = flushed;
+
+    // Release and join before asserting, so a failed check cannot leave a joinable thread behind
+    sink.release();
+    flusher.join();
+
+    EXPECT_TRUE(entered) << "watcher never picked up the batch";
+    EXPECT_FALSE(flushedWhileGated) << "flush() returned before its batch was written";
+    EXPECT_EQ(10u, sink.written.load());
+}
+
+// Regression: starting shutdown used to release a pending flush() before its batch was written.
+TEST(LoggingOpsShutdownTest, shutdownDoesNotReleasePendingFlushEarly)
+{
+    GatedSink sink;
+    for (int i = 0; i < 10; ++i)
+        sink.write(std::string_view("pending"));
+    std::atomic<bool> flushed{false};
+    std::thread flusher([&]() { sink.flush(); flushed = true; });
+    const bool entered = waitFor([&]() { return sink.writerEntered.load(); }, 2000ms);
+
+    std::thread stopper([&]() { sink.shutdown(); });   // shutdown starts while the batch is still gated
+    std::this_thread::sleep_for(100ms);
+    const bool flushedDuringShutdown = flushed;
 
     sink.release();
     flusher.join();
-    EXPECT_TRUE(flushed);
+    stopper.join();
+
+    EXPECT_TRUE(entered) << "watcher never picked up the batch";
+    EXPECT_FALSE(flushedDuringShutdown) << "shutdown released flush() before its batch was written";
     EXPECT_EQ(10u, sink.written.load());
 }
 

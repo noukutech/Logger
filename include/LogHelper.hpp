@@ -497,6 +497,7 @@ namespace logger
                 format_str,
                 args...);
 
+        loggingOps.flush();   // abort/exit skip destructors; a queued assertion record would be lost
         std::lock_guard<std::mutex> lock(raceMtx);
         if (exitGracefuly)
         {
@@ -541,6 +542,7 @@ namespace logger
                 format_str,
                 args...);
 
+        loggingOps.flush();   // abort skips destructors; without this a file sink loses the fatal record
         std::abort();
     }
 };  // namespace logger
