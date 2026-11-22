@@ -16,7 +16,7 @@
  * 
  * MIT License
  * 
- * Copyright (c) 2025 Swarnendu Roy Chowdhury
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -49,6 +49,7 @@
 
 namespace logger
 {
+    /// Public time-point alias (kept on high_resolution_clock for source compatibility; the timer uses steady_clock internally).
     using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
     /**
@@ -169,7 +170,7 @@ namespace logger
             /**
              * @brief The start time of the timer.
              */
-            std::chrono::steady_clock::time_point m_startTime;   // monotonic; high_resolution_clock is system_clock on libstdc++/MinGW
+            std::chrono::steady_clock::time_point m_startTime;   // steady_clock: high_resolution_clock is system_clock on libstdc++/MinGW
             /**
              * @brief The end time of the timer.
              */
@@ -187,9 +188,9 @@ namespace logger
              */
             std::thread::id m_threadId;
             /**
-             * @brief A mutex for thread safety.
+             * @brief Guards m_startTime, m_endTime, m_threadId and the running-state transitions.
              */
-            mutable std::mutex m_mutex;   // guards m_startTime/m_endTime/m_threadId and the running-state transitions
+            mutable std::mutex m_mutex;
             /**
              * @brief A condition variable for thread safety.
              */

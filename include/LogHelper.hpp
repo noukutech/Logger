@@ -1,7 +1,7 @@
 /*
  * MIT License
  * 
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -109,7 +109,14 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
-    // Caller must hold raceMtx: loggerObj and its assertion condition are shared across threads
+    /**
+     * @brief Format a record with the shared logger and hand it to the logging sink.
+     *
+     * Same as logMsg() but without taking the lock, so a caller (log_assert) can set the
+     * assertion condition and log in one critical section.
+     *
+     * @pre The caller holds raceMtx: loggerObj and its assertion condition are shared by all threads.
+     */
     template<typename ...Args>
     inline void logMsgLocked
     (   const std::string_view fileName,

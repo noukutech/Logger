@@ -6,7 +6,7 @@
  * functionalities for measuring elapsed time, getting the current time in
  * various formats, and retrieving specific components of the current time.
  * 
- * Copyright (c) 2025 Swarnendu RC
+ * Copyright (c) 2025 Nouku Technologies
  * 
  * @license MIT License
  * 

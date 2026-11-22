@@ -5,7 +5,7 @@
  * @copyright
  * MIT License
  * 
- * Copyright (c) 2024 Swarnendu RC
+ * Copyright (c) 2024 Nouku Technologies
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -430,8 +430,16 @@ namespace logger
              */
             void push(const std::string_view data);
 
-            // Stop and join the watcher after it drains pending records. Derived classes must
-            // call this in their destructor so the watcher never calls into a destroyed override.
+            /**
+             * @brief Stop the watcher thread after it has written every accepted record.
+             *
+             * Closes admission (later push() calls are rejected and reported through the
+             * exception list), wakes the watcher, waits for it to drain the queue and joins it.
+             * Idempotent: calling it again is a no-op.
+             *
+             * @note Derived classes must call this from their own destructor, so the watcher
+             * never calls writeToOutStreamObject() on an already destroyed derived object.
+             */
             void stopWatcher();
 
             BufferQ m_DataRecords;
@@ -439,10 +447,12 @@ namespace logger
             std::condition_variable m_DataRecordsCv;
             std::atomic_bool m_dataReady;
             std::atomic_bool m_shutAndExit;
-            // Records pushed / written so far; guarded by m_DataRecordsMtx, used by flush()
+            /// Number of records accepted by push(). Guarded by m_DataRecordsMtx; flush() waits on it.
             std::uint64_t m_pushedSeq = 0;
+            /// Number of records the watcher has handed to the sink. Guarded by m_DataRecordsMtx.
             std::uint64_t m_writtenSeq = 0;
-            bool m_watcherDone = false;   // guarded by m_DataRecordsMtx; set when the watcher has drained and exited
+            /// Set once the watcher has drained the queue and exited. Guarded by m_DataRecordsMtx.
+            bool m_watcherDone = false;
             std::thread m_watcher;
 
             /**
@@ -451,7 +461,7 @@ namespace logger
              * during the data operations.
              */
             std::vector<std::exception_ptr> m_excpPtrVec;
-            std::mutex m_excpMtx;   // guards m_excpPtrVec
+            std::mutex m_excpMtx;   ///< Guards m_excpPtrVec against concurrent producers and the watcher.
 
         private:
             /**

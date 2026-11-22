@@ -9,7 +9,7 @@
  *
  * MIT License
  *
- * Copyright (c) 2025 Swarnendu Roy Chowdhury
+ * Copyright (c) 2025 Nouku Technologies
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -446,8 +446,8 @@ namespace logger
             DataQ m_FileContent;
             std::filesystem::path m_FilePathObj;
             std::uintmax_t m_MaxFileSize;
-            mutable std::mutex m_FileOpsMutex;   // sole guard for file I/O; RAII locks release it on every exit, including throws
-            std::mutex m_rotateMtx;   // serializes the size-check/rename/re-create rotation step
+            mutable std::mutex m_FileOpsMutex;   ///< Sole guard for file I/O and m_FileContent; RAII locks release it on every exit, including throws.
+            std::mutex m_rotateMtx;              ///< Serializes existence check, size check, rotation and enqueue in writeDataTo().
     };
 };  //logger namespace
 
