@@ -28,7 +28,7 @@ This Logger library offers simple logging capabilities, including multiple log l
 - Support for console output and file output (either one at a time).
 - Customizable log message format.
 - Thread-safe logging to prevent message interleaving in multithreaded applications.
-- Minimal dependencies — uses only the C++ standard library and fmt for formatting.
+- Minimal dependencies — uses only the C++ standard library (`std::format` for formatting).
 - Simple APIs for quick logging.
 - Configurable log message format.
 - Easy to integrate with existing projects.
@@ -74,11 +74,13 @@ This Logger library offers simple logging capabilities, including multiple log l
 - On macOS, Homebrew include/lib paths are picked up automatically (`brew --prefix`), so Homebrew's `googletest` works on Apple Silicon without extra flags
 - On Windows, build inside an MSYS2 UCRT64 shell with `make`, `mingw-w64-ucrt-x86_64-gcc` (or `-clang`) and `mingw-w64-ucrt-x86_64-gtest` installed
 - Google Test framework for running tests (optional, but recommended)
-- `fmt` library for formatting (if not installed already, it will be downloaded and installed during the build process)
 
 Clone the repository:
 
-`git clone https://github.com/SwarnenduRC/Logger.gitcd Logger`
+```bash
+git clone https://github.com/SwarnenduRC/Logger.git
+cd Logger
+```
 
 ### Build the library and install (manual)
 
@@ -130,7 +132,7 @@ Where `buildNinstall.sh` is a script that will build the library and install it 
 - `-LOG_FILE_NAME`: Set the log file name. Default is Logger.log.
 - `-BUILD_TEST`: Enable building tests. Default is no.
 
-> **Note**: The script will automatically download and install the `fmt` library if it is not already installed.
+> **Note**: The script also installs the `fmt` library if it is missing; the library itself does not need it (it uses `std::format`).
 > The default installation locations are:
 >
 > - Library files: `/usr/local/lib`
@@ -144,7 +146,7 @@ For more details on the script, you can run
 
 ## Configuration
 
-You can configure the logger by modifying the `Logger.h` file or by passing configuration options during build and installation. The logger supports various configuration options such as cconsole logging/file logging, log file name (if file logging is enabled), max log file size, msg format, and more.
+You can configure the logger by modifying the `Logger.hpp` file or by passing configuration options during build and installation. The logger supports various configuration options such as cconsole logging/file logging, log file name (if file logging is enabled), max log file size, msg format, and more.
 
 Please refer to buildNinstall.sh script for more details on the available configuration options or alternatively run
 
@@ -307,7 +309,7 @@ TEST_F(ClockTests, testGetDayOfWeek)
     std::ostringstream oss;
     oss << std::put_time(localTime, "%A");
     EXPECT_STREQ(expDayOfWeek.c_str(), oss.str().c_str());
-}q
+}
 ```
 
 ## Contributing
