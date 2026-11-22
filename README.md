@@ -132,8 +132,7 @@ Where `buildNinstall.sh` is a script that will build the library and install it 
 - `-LOG_FILE_NAME`: Set the log file name. Default is Logger.log.
 - `-BUILD_TEST`: Enable building tests. Default is no.
 
-> **Note**: The script also installs the `fmt` library if it is missing; the library itself does not need it (it uses `std::format`).
-> The default installation locations are:
+> **Note**: The default installation locations are:
 >
 > - Library files: `/usr/local/lib`
 > - Header files: `/usr/local/include/logger`

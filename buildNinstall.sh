@@ -337,17 +337,6 @@ if [[ "$BUILD_TEST" == "yes" ]]; then
     fi
 fi
 
-# Script to install fmt library
-./scripts/install_fmt.sh
-status_fmt=$?
-if [[ $status_fmt -ne 0 ]]; then
-    echo "Error: fmt library installation script failed with exit code $status_fmt"
-    exit $status_fmt
-else
-    echo "fmt library installation completed successfully"
-fi
-
-echo ""
 
 # Now do a clean build
 make clean; make BUILD_TYPE="$BUILD_TYPE" LIB_TYPE="$LIB_TYPE" BUILD_TEST="$BUILD_TEST"
