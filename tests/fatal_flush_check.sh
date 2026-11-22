@@ -48,7 +48,7 @@ printf '#include "LOGGER_MACROS.hpp"\nusing namespace logger;\nint main() { LOG_
 if $CXX -std=c++20 -Iinclude "${EXTRA[@]}" -DFILE_LOGGING "-DLOG_FILE_NAME=\"$TMP/SINKFAIL.log\"" src/*.cpp "$TMP/SINKFAIL.cpp" -o "$TMP/SINKFAIL"; then
   # stderr goes through a pipe to a reader outside the limit (a capture file would hit the limit too)
   (cd "$TMP" && trap '' XFSZ && ulimit -f 0 && perl -e 'alarm 30; exec @ARGV' ./SINKFAIL 2>&1 >/dev/null) | cat > "$TMP/SINKFAIL.err"; rc=${PIPESTATUS[0]}
-  if [ "$rc" -eq 134 ] && grep -q 'fatal_sinkfail-record.*write failure' "$TMP/SINKFAIL.err" \
+  if [ "$rc" -eq 134 ] && grep -q 'fatal_sinkfail-record.*sink failed to write this record' "$TMP/SINKFAIL.err" \
      && grep -qF '\x1b[31m' "$TMP/SINKFAIL.err" && ! LC_ALL=C grep -q "$(printf '\033')" "$TMP/SINKFAIL.err"; then
     echo "FATAL_SINKFAIL: ok (exit=$rc, record reported on stderr, control chars escaped)"
   else

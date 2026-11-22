@@ -40,6 +40,7 @@
 
 #include <bitset>
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <iostream>
 #include <streambuf>
@@ -405,37 +406,74 @@ namespace
     };
 }
 
+namespace
+{
+    // Console sink whose recorded failures are inspected by the test and not written to the
+    // exception log file at destruction.
+    class QuietConsoleOps : public ConsoleOps
+    {
+        public:
+            ~QuietConsoleOps() override
+            {
+                stopWatcher();
+                std::scoped_lock<std::mutex> lock(m_excpMtx);
+                m_excpPtrVec.clear();
+            }
+            size_t failureCount() { std::scoped_lock<std::mutex> lock(m_excpMtx); return m_excpPtrVec.size(); }
+    };
+
+    // Child-process watchdog: if the code under test hangs, end the child with a distinct code
+    // instead of leaving a stuck thread in the test binary.
+    void startWatchdog()
+    {
+        std::thread([]() { std::this_thread::sleep_for(std::chrono::seconds(10)); std::_Exit(3); }).detach();
+    }
+}
+
 // Regression: a throwing console stream left the ConsoleOps busy flag set, so the next batch
-// (and every later flush(), including LOG_FATAL's) waited forever.
+// (and every later flush(), including LOG_FATAL's) waited forever. Runs in a child process so a
+// hang ends that process (exit code 3), not the test binary.
 TEST(ConsoleOpsFailureTest, throwingStreamDoesNotWedgeLaterWrites)
 {
-    auto* original = std::cout.rdbuf();
-    const auto originalExceptions = std::cout.exceptions();
-    FailOnceBuf failing(original);
-    std::cout.rdbuf(&failing);
-    std::cout.exceptions(std::ios::badbit);
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(
+        {
+            startWatchdog();
+            FailOnceBuf failing(std::cout.rdbuf());
+            std::cout.rdbuf(&failing);
+            std::cout.exceptions(std::ios::badbit);
+            {
+                QuietConsoleOps console;
+                console.write(std::string_view("first-write-throws"));
+                console.flush();
+                std::cout.clear();
+                console.write(std::string_view("second-write-ok"));
+                console.flush();   // used to block forever here
+            }
+            std::_Exit(0);
+        },
+        ::testing::ExitedWithCode(0), "");
+}
 
-    std::atomic<bool> finished{false};
-    std::thread worker([&]()
-    {
-        ConsoleOps console;
-        console.write(std::string_view("first-write-throws"));
-        console.flush();
-        std::cout.clear();   // the failed write left badbit set
-        console.write(std::string_view("second-write-ok"));
-        console.flush();   // used to block forever here
-        finished = true;
-    });
-    for (int i = 0; i < 5000 && !finished; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    const bool done = finished;
-    if (done)
-        worker.join();
-    else
-        worker.detach();   // wedged: do not block the test binary forever
-
-    std::cout.exceptions(originalExceptions);
-    std::cout.clear();
-    std::cout.rdbuf(original);
-    EXPECT_TRUE(done) << "ConsoleOps hung after a throwing stream write";
+// With the default exception mask a failed console write only sets badbit; it must still be
+// reported, and a terminal record written with writeRecordNow() must report failure.
+TEST(ConsoleOpsFailureTest, silentStreamFailureIsReported)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(
+        {
+            startWatchdog();
+            FailOnceBuf failing(std::cout.rdbuf());
+            std::cout.rdbuf(&failing);   // exceptions stay disabled (default)
+            int code = 0;
+            {
+                QuietConsoleOps console;
+                if (console.writeRecordNow("terminal-record"))
+                    code |= 1;            // the failed write must not be reported as written
+                if (console.failureCount() == 0)
+                    code |= 2;            // and the failure must be recorded
+            }
+            std::_Exit(code == 0 ? 0 : 10 + code);
+        },
+        ::testing::ExitedWithCode(0), "");
 }

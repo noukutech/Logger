@@ -232,3 +232,70 @@ TEST(LoggingOpsFailureTest, writeFailureAfterOpenIsReportedAndFlushReturns)
     std::filesystem::remove_all(dir, ec);
 }
 #endif
+
+#include "LogHelper.hpp"
+#include <cstring>
+
+namespace
+{
+    // Fails any batch that contains a record starting with "old"; records everything else.
+    class ContentFailSink : public LoggingOps
+    {
+        public:
+            explicit ContentFailSink(bool failAll = false) : m_failAll(failAll) { m_watcher = std::thread([this]() { keepWatchAndPull(); }); }
+            ~ContentFailSink() override
+            {
+                stopWatcher();
+                std::scoped_lock<std::mutex> lock(m_excpMtx);
+                m_excpPtrVec.clear();   // expected failures; keep them out of the exception log file
+            }
+            const std::string getClassId() const override { return "ContentFailSink"; }
+            size_t failureCount() { std::scoped_lock<std::mutex> lock(m_excpMtx); return m_excpPtrVec.size(); }
+            std::atomic<size_t> terminalWrites{0};
+
+        protected:
+            void writeDataTo(const std::string_view data) override { push(data); }
+            void writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr& excpPtr) override
+            {
+                bool fail = m_failAll;
+                bool sawTerminal = false;
+                while (!dataQueue.empty())
+                {
+                    const char* rec = dataQueue.front().data();
+                    if (std::strncmp(rec, "old", 3) == 0)
+                        fail = true;
+                    if (std::strncmp(rec, "terminal", 8) == 0)
+                        sawTerminal = true;
+                    dataQueue.pop();
+                }
+                if (fail)
+                    excpPtr = std::make_exception_ptr(std::runtime_error("batch write failed"));
+                else if (sawTerminal)
+                    ++terminalWrites;
+            }
+
+        private:
+            bool m_failAll;
+    };
+}
+
+// Regression: success of the terminal (fatal/assert) record was inferred from a sink-wide error
+// count, so a failure of an *older* queued batch during the pre-fatal drain sent a successfully
+// written fatal record to stderr. The terminal record's own write result must decide.
+TEST(TerminalRecordTest, olderBatchFailureDoesNotMarkTerminalRecordFailed)
+{
+    ContentFailSink sink;
+    for (int i = 0; i < 10; ++i)
+        sink.write(std::string_view("old-record"));   // queued, will fail when drained
+    EXPECT_TRUE(persistTerminalRecord(sink, "terminal-record"));
+    EXPECT_EQ(1u, sink.terminalWrites.load());
+    EXPECT_GT(sink.failureCount(), 0u);   // the older batch did fail
+}
+
+TEST(TerminalRecordTest, failedTerminalWriteIsReported)
+{
+    ContentFailSink sink(/*failAll=*/true);
+    EXPECT_FALSE(persistTerminalRecord(sink, "terminal-record"));
+    EXPECT_EQ(0u, sink.terminalWrites.load());
+    EXPECT_GT(sink.failureCount(), 0u);
+}

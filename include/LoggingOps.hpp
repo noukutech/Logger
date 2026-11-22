@@ -113,11 +113,17 @@ namespace logger
              * only one thread can add an exception at a time.
              */
             /**
-             * @brief Number of write/operation failures recorded so far.
-             * Thread safe, unlike getAllExceptions(). The fatal/assert paths compare it before and
-             * after their own flush to tell whether *their* record may not have been persisted.
+             * @brief Write one record synchronously and report whether *it* was written.
+             *
+             * Bypasses the queue and calls writeToOutStreamObject() on the calling thread, so the
+             * result belongs to this record alone (not to any other queued batch). Used by the
+             * fatal/assert paths after flush(), right before the process terminates. A failure is
+             * also added to the exception list. File rotation is not applied to this record.
+             *
+             * @param [in] record The formatted record.
+             * @return true if the sink reported no error for this record.
              */
-            inline std::size_t raisedExceptionCount() noexcept                              { std::scoped_lock<std::mutex> lock(m_excpMtx); return m_excpPtrVec.size(); }
+            bool writeRecordNow(const std::string_view record);
 
             inline void addRaisedException(const std::exception_ptr& excpPtr) noexcept      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 

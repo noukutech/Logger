@@ -96,6 +96,13 @@ void ConsoleOps::writeToOutStreamObject(BufferQ&& dataQueue, std::exception_ptr&
                 {
                     outStream << data.data() << std::endl;
                     outStream.flush();
+                    // With the default exception mask a failed write only sets badbit; report it
+                    if (!outStream.good() && errMsg.empty())
+                    {
+                        std::ostringstream osstr;
+                        osstr << "WRITING_ERROR : [" << std::this_thread::get_id() << "]: to console failed";
+                        errMsg = osstr.str();
+                    }
                 }
             }
         }

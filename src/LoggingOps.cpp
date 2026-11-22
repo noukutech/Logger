@@ -102,16 +102,47 @@ void LoggingOps::stopWatcher()
         m_watcher.join();
 }
 
+namespace
+{
+    // Split a record into null-terminated chunks; the last byte of every chunk is reserved for '\0'.
+    // Returns the number of chunks appended.
+    size_t appendChunks(BufferQ& queue, const std::string_view data)
+    {
+        constexpr size_t chunkSize = bufferSize - 1;
+        std::array<char, bufferSize> dataRecord{};
+        size_t count = 0;
+        for (size_t pos = 0; pos < data.size(); pos += chunkSize)
+        {
+            const auto chunk = data.substr(pos, chunkSize);
+            std::copy(chunk.begin(), chunk.end(), dataRecord.begin());
+            std::fill(dataRecord.begin() + chunk.size(), dataRecord.end(), '\0');
+            queue.push(dataRecord);
+            ++count;
+        }
+        return count;
+    }
+}
+
+bool LoggingOps::writeRecordNow(const std::string_view record)
+{
+    if (record.empty())
+        return true;
+    BufferQ single;
+    appendChunks(single, record);
+    std::exception_ptr excpPtr = nullptr;
+    writeToOutStreamObject(std::move(single), excpPtr);
+    if (excpPtr)
+        addRaisedException(excpPtr);
+    return !excpPtr;
+}
+
 void LoggingOps::push(const std::string_view data)
 {
     if (data.empty())
         return;
 
-    // Last byte of every record is reserved for the null terminator
-    constexpr size_t chunkSize = bufferSize - 1;
     bool notifyWatcher = false;
     {
-        std::array<char, bufferSize> dataRecord{};
         std::scoped_lock<std::mutex> lock(m_DataRecordsMtx);
         // Admission closes as soon as shutdown starts, so steady producers cannot keep the watcher from exiting
         if (m_shutAndExit)
@@ -119,14 +150,7 @@ void LoggingOps::push(const std::string_view data)
             addRaisedException(std::make_exception_ptr(std::runtime_error("Log record dropped: logging after shutdown")));
             return;
         }
-        for (size_t pos = 0; pos < data.size(); pos += chunkSize)
-        {
-            const auto chunk = data.substr(pos, chunkSize);
-            std::copy(chunk.begin(), chunk.end(), dataRecord.begin());
-            std::fill(dataRecord.begin() + chunk.size(), dataRecord.end(), '\0');
-            m_DataRecords.push(dataRecord);
-            ++m_pushedSeq;
-        }
+        m_pushedSeq += appendChunks(m_DataRecords, data);
         // Once the queue holds at least 256 records, wake the watcher to write them out
         if (m_DataRecords.size() >= 256)
         {
