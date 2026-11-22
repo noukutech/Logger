@@ -55,7 +55,9 @@ namespace logger
      * @brief A global mutex to this file to protect
      * the concurrency of logger property attributes
      */
-    static std::mutex raceMtx;
+    // inline (not static): one mutex/logger per program. Per-TU copies broke when the linker
+    // picked one TU's inline template instance for callers in another TU.
+    inline std::mutex raceMtx;
 
     /**
      * @brief The logger object for the application.
@@ -65,7 +67,7 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
-    inline static Logger loggerObj("%Y%m%d_%H%M%S");
+    inline Logger loggerObj("%Y%m%d_%H%M%S");
 
     /**
      * @brief The stream object for logging operations.
@@ -76,7 +78,7 @@ namespace logger
      * @note inline because otherwise it will cause linker errors
      * when used in multiple translation units.
      */
-    inline static auto& loggingOps = Logger::buildLoggingOpsObject();
+    inline auto& loggingOps = Logger::buildLoggingOpsObject();
 
     /**
      * @brief Set the logger properties for the current log message.
@@ -502,21 +504,26 @@ namespace logger
         if (cond.empty())
             return;
 
+        // Termination must happen even if logging itself fails
+        try
         {
-            // Condition and record under one lock, so a concurrent log call cannot clear it or take it
-            std::lock_guard<std::mutex> raceLock(raceMtx);
-            loggerObj.setAssertCondition(std::string(cond));
-            logMsgLocked(fileName,
-                         funcName,
-                         FORWARD_ANGLE,
-                         lineNo,
-                         std::this_thread::get_id(),
-                         LOG_TYPE::LOG_ASSERT,
-                         format_str,
-                         args...);
+            {
+                // Condition and record under one lock, so a concurrent log call cannot clear it or take it
+                std::lock_guard<std::mutex> raceLock(raceMtx);
+                loggerObj.setAssertCondition(std::string(cond));
+                logMsgLocked(fileName,
+                             funcName,
+                             FORWARD_ANGLE,
+                             lineNo,
+                             std::this_thread::get_id(),
+                             LOG_TYPE::LOG_ASSERT,
+                             format_str,
+                             args...);
+            }
+            // Lock released first: atexit handlers may log, and abort/exit skip destructors so flush now
+            loggingOps.flush();
         }
-        // Lock released first: atexit handlers may log, and abort/exit skip destructors so flush now
-        loggingOps.flush();
+        catch (...) {}
         if (exitGracefuly)
         {
             std::exit(EXIT_FAILURE);
@@ -551,16 +558,20 @@ namespace logger
         Args&&... args
     )
     {
-        logMsg( fileName,
-                funcName,
-                FORWARD_ANGLE,
-                lineNo,
-                std::this_thread::get_id(),
-                LOG_TYPE::LOG_FATAL,
-                format_str,
-                args...);
-
-        loggingOps.flush();   // abort skips destructors; without this a file sink loses the fatal record
+        // Termination must happen even if logging itself fails (e.g. bad_alloc)
+        try
+        {
+            logMsg( fileName,
+                    funcName,
+                    FORWARD_ANGLE,
+                    lineNo,
+                    std::this_thread::get_id(),
+                    LOG_TYPE::LOG_FATAL,
+                    format_str,
+                    args...);
+            loggingOps.flush();   // abort skips destructors; without this a file sink loses the fatal record
+        }
+        catch (...) {}
         std::abort();
     }
 };  // namespace logger

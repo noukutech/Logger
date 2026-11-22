@@ -413,3 +413,24 @@ TEST(LoggerConversionTest, logAcceptsRvalueArguments)
     logger.log("{} {}", 42, std::string("rvalue"));
     EXPECT_NE(std::string::npos, logger.getLogStream().str().find("42 rvalue"));
 }
+
+const void* logHelperLoggerAddressFromSecondTU();
+const void* logHelperMutexAddressFromSecondTU();
+const void* logHelperOpsAddressFromSecondTU();
+
+// Regression: raceMtx/loggerObj were per-TU statics while inline templates using them could be
+// merged across TUs, so a caller could lock one TU's mutex and format with another TU's logger.
+TEST(LoggerSharedStateTest, loggingStateIsSharedAcrossTranslationUnits)
+{
+    EXPECT_EQ(static_cast<const void*>(&logger::loggerObj), logHelperLoggerAddressFromSecondTU());
+    EXPECT_EQ(static_cast<const void*>(&logger::raceMtx), logHelperMutexAddressFromSecondTU());
+    EXPECT_EQ(static_cast<const void*>(&logger::loggingOps), logHelperOpsAddressFromSecondTU());
+}
+
+// Regression: a malformed runtime format string threw std::format_error out of the logging API.
+TEST(LoggerConversionTest, malformedFormatDoesNotThrow)
+{
+    Logger logger("%Y");
+    EXPECT_NO_THROW(logger.log("broken {", 1));
+    EXPECT_NE(std::string::npos, logger.getLogStream().str().find("format error"));
+}

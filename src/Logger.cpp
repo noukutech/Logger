@@ -276,7 +276,16 @@ void Logger::constructLogMsgPrefixSecondPart()
 void Logger::vlog(const std::string_view formatStr, std::format_args args)
 {
     populatePrerequisitFileds();
-    auto logMsg = std::vformat(formatStr, args);
+    std::string logMsg;
+    try
+    {
+        logMsg = std::vformat(formatStr, args);
+    }
+    catch (const std::format_error& e)
+    {
+        // A malformed format string must not throw out of the logging API (and skip LOG_FATAL's abort)
+        logMsg = std::string(formatStr) + " [format error: " + e.what() + "]";
+    }
     // Remove any "\"" from the formed string, might have been left, due to
     // MACRO expression expansion
     if (logMsg.find(DOUBLE_QUOTES) != std::string::npos)
