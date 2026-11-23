@@ -179,7 +179,12 @@ void Consumer::consume()
 {
     LOG_ENTRY();
     std::unique_lock<std::mutex> lock(m_mtx);
-    m_cv.wait(lock, []{ return !m_dataQueue.empty() || m_isDataReady; });
+    m_cv.wait(lock, [this]{ return !m_dataQueue.empty() || m_isDataReady; });
+    if (m_dataQueue.empty())   // woken because production finished, nothing left to consume
+    {
+        LOG_EXIT();
+        return;
+    }
     m_consumedDataQ.emplace(m_dataQueue.front());
     m_dataQueue.pop();
     std::ostringstream oss;
