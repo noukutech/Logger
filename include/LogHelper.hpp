@@ -502,23 +502,7 @@ namespace logger
     }
 
     /**
-     * @brief Log an assertion failure message.
-     *
-     * This function logs an assertion failure message with the specified condition and format.
-     * It sets the logger properties such as file name, function name, line number, thread ID,
-     * and log type before logging the message. If `exitGracefuly` is true, it will exit the program gracefully.
-     *
-     * @tparam Args Variadic template parameters for additional arguments to be formatted into the log message.
-     * @param [in] fileName The name of the file where the log is being generated.
-     * @param [in] funcName The name of the function where the log is being generated.
-     * @param [in] lineNo The line number in the source code where the log is being generated.
-     * @param [in] cond The condition that failed (assertion).
-     * @param [in] exitGracefuly Whether to exit gracefully or abort on assertion failure.
-     * @param [in] format_str The format string for the log message.
-     * @param [in] args Additional arguments to be formatted into the log message.
-     */
-    /**
-     * @brief Write a fatal/assert record to stderr with control characters escaped (\xNN).
+     * @brief Write a fatal/assert record to stderr with control characters escaped as `\\xNN`.
      * Allocation-free, so it is safe on a failing path right before abort()/exit().
      */
     inline void writeEscapedToStderr(const std::string_view record) noexcept
@@ -560,6 +544,22 @@ namespace logger
         return false;
     }
 
+    /**
+     * @brief Log an assertion failure message.
+     *
+     * This function logs an assertion failure message with the specified condition and format.
+     * It sets the logger properties such as file name, function name, line number, thread ID,
+     * and log type before logging the message. If `exitGracefuly` is true, it will exit the program gracefully.
+     *
+     * @tparam Args Variadic template parameters for additional arguments to be formatted into the log message.
+     * @param [in] fileName The name of the file where the log is being generated.
+     * @param [in] funcName The name of the function where the log is being generated.
+     * @param [in] lineNo The line number in the source code where the log is being generated.
+     * @param [in] cond The condition that failed (assertion).
+     * @param [in] exitGracefuly Whether to exit gracefully or abort on assertion failure.
+     * @param [in] format_str The format string for the log message.
+     * @param [in] args Additional arguments to be formatted into the log message.
+     */
     template<typename ...Args>
     void log_assert
     (

@@ -102,9 +102,14 @@ make clean; make LIB_TYPE=shared BUILD_TYPE=debug BUILD_TEST=yes
 
 #### Install the library
 
-To install the library, run the following commands if you are unsure for now where to install at present:
+To install the library, run the following commands from the repository root after building (this is what `./scripts/install_lib.sh` does; adjust the install locations if needed):
 
 ```bash
+LIB_DIR="lib"                                  # built libraries
+HEADER_DIR="include"                           # public headers
+INSTALL_LIB_DIR="/usr/local/lib"
+INSTALL_INCLUDE_DIR="/usr/local/include/logger"
+
 # Create target directories if not exist
 sudo mkdir -p "$INSTALL_LIB_DIR"
 sudo mkdir -p "$INSTALL_INCLUDE_DIR"
@@ -166,23 +171,32 @@ To use the Logger in your C++ project, follow these steps:
 1. Use the logger macros to log messages at different levels in your code. For example:
 
 ```cpp
+#include <logger/LOGGER_MACROS.hpp>
+
+using namespace logger;   // the macros call logger:: helpers unqualified
+
 void Consumer::consume()
 {
-    logger::LOG_ENTRY();
+    LOG_ENTRY();
     std::unique_lock<std::mutex> lock(m_mtx);
-    m_cv.wait(lock, []{ return !m_dataQueue.empty() || m_isDataReady; });
+    m_cv.wait(lock, [this]{ return !m_dataQueue.empty() || m_isDataReady; });
+    if (m_dataQueue.empty())   // woken because production finished, nothing left to consume
+    {
+        LOG_EXIT();
+        return;
+    }
     m_consumedDataQ.emplace(m_dataQueue.front());
     m_dataQueue.pop();
     std::ostringstream oss;
     oss << std::endl << "Consumer[" << getID() << "] ";
     oss << "consumes data[" << m_consumedDataQ.front() << "] ";
     oss << "while running in thread " << std::this_thread::get_id() << "\n" << std::endl;
-    logger::LOG_INFO(oss.str());
+    LOG_INFO(oss.str());
     m_consumedDataQ.pop();
     lock.unlock();
     m_cv.notify_all();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    logger::LOG_EXIT();
+    LOG_EXIT();
 }
 ```
 
