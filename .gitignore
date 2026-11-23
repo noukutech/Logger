@@ -49,3 +49,12 @@ __pycache__/
 ## Ignore build specific files
 *.dSYM
 .DS_Store
+
+## Ignore generated Doxygen output
+docs/html/
+docs/latex/
+
+## Ignore local AI tool state
+.claude/
+.omc/
+.serena/
