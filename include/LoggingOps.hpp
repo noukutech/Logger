@@ -106,13 +106,6 @@ namespace logger
             inline const std::vector<std::exception_ptr>& getAllExceptions() noexcept       { return m_excpPtrVec; }
 
             /**
-             * @brief Add a raised exception to the exception vector
-             *
-             * @param [in] excpPtr The exception pointer to be added
-             * @note This function is thread safe. It uses mutex to ensure that
-             * only one thread can add an exception at a time.
-             */
-            /**
              * @brief Write one record synchronously and report whether *it* was written.
              *
              * Bypasses the queue and calls writeToOutStreamObject() on the calling thread, so the
@@ -125,6 +118,13 @@ namespace logger
              */
             bool writeRecordNow(const std::string_view record);
 
+            /**
+             * @brief Add a raised exception to the exception vector
+             *
+             * @param [in] excpPtr The exception pointer to be added
+             * @note This function is thread safe. It uses mutex to ensure that
+             * only one thread can add an exception at a time.
+             */
             inline void addRaisedException(const std::exception_ptr& excpPtr)      { std::scoped_lock<std::mutex> lock(m_excpMtx); m_excpPtrVec.emplace_back(excpPtr); }
 
             /**
